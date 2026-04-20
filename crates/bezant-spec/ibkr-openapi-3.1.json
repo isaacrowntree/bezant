@@ -12702,8 +12702,7 @@
         "properties": {
           "SMA": {
             "description": "Simple Moving Average of the account.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "accountType": {
             "description": "Describes the unique account type. For standard individual accounts, an empty string is returned.",
@@ -12711,23 +12710,19 @@
           },
           "accruedInterest": {
             "description": "Accrued interest is the interest accruing on a security since the previous coupon date. If a security is sold between two payment dates, the buyer usually compensates the seller for the interest accrued, either within the price or as a separate payment.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "availableFunds": {
             "description": "The amount of equity you have available for trading. For both the Securities and Commodities segments, this is calculated as: Equity with Loan Value \u2013 Initial Margin.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "balance": {
             "description": "Returns the total account balance.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "buyingPower": {
             "description": "Total buying power available for the account.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "cashBalances": {
             "description": "An array containing balance information for all currencies held by the account.",
@@ -12735,8 +12730,7 @@
               "properties": {
                 "balance": {
                   "description": "The total available currency held in the account.",
-                  "format": "int32",
-                  "type": "integer"
+                  "type": "number"
                 },
                 "currency": {
                   "description": "The currency the values represent. Base currency represented as \"Total (in {BaseCurrency})\"\n",
@@ -12744,8 +12738,7 @@
                 },
                 "settledCash": {
                   "description": "The available settled cash that can be withdrawn from the account.",
-                  "format": "int32",
-                  "type": "integer"
+                  "type": "number"
                 }
               },
               "type": "object"
@@ -12754,43 +12747,35 @@
           },
           "equityWithLoanValue": {
             "description": "The basis for determining whether you have the necessary assets to either initiate or maintain security assets.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "excessLiquidity": {
             "description": "The amount of cash in excess of the usual requirement in your account.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "initialMargin": {
             "description": "The available initial margin for the account.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "maintenanceMargin": {
             "description": "The available maintenance margin for the account.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "netLiquidationValue": {
             "description": "The basis for determining the price of the assets in your account.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "regTLoan": {
             "description": "The Federal Reserve Board regulation governing the amount of credit that broker dealers may extend to clients who borrow money to buy securities on margin.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "regTMargin": {
             "description": "The initial margin requirements calculated under US Regulation T rules for both the securities and commodities segment of your account.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "securitiesGVP": {
             "description": "Absolute value of the Long Stock Value + Short Stock Value + Long Option Value + Short Option Value + Fund Value.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "status": {
             "description": "If the account is currently non-tradeable, a status message will be dispalyed.",
@@ -12798,8 +12783,7 @@
           },
           "totalCashValue": {
             "description": "Cash recognized at the time of trade + futures P&L. This value reflects real-time currency positions, including:\n *  Trades executed directly through the FX market.\n *  Trades executed as a result of automatic IB conversions, which occur when you trade a product in a non-base currency.\n *  Trades deliberately executed to close non-base currency positions using the FXCONV destination.\n",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           }
         },
         "type": "object"
@@ -13364,8 +13348,7 @@
             "type": "integer"
           },
           "minValue": {
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "name": {
             "description": "Parameter name.",
@@ -13430,8 +13413,7 @@
               "properties": {
                 "amount": {
                   "description": "The total distribution value for each sub-account for user-defined allocation methods.",
-                  "format": "int32",
-                  "type": "integer"
+                  "type": "number"
                 },
                 "name": {
                   "description": "The accountId of a given sub-account.",
@@ -13937,8 +13919,7 @@
           },
           "cashSize": {
             "description": "Default cash value quantity.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "costReport": {
             "description": "Indicates whether or not a cost report has been requested (Client Portal only).",
@@ -14041,13 +14022,11 @@
               "properties": {
                 "increment": {
                   "description": "The price of the instrument must be submitted as a mulitple of the increment value.",
-                  "format": "int32",
-                  "type": "integer"
+                  "type": "number"
                 },
                 "lowerEdge": {
                   "description": "If the current mark price of the instrument is at or above the lower edge, the given increment value is used for order prices.",
-                  "format": "int32",
-                  "type": "integer"
+                  "type": "number"
                 }
               },
               "type": "object"
@@ -14277,8 +14256,7 @@
                   },
                   "val": {
                     "description": "Returns the inital NAV value of {Period Range} from the current date.",
-                    "format": "int32",
-                    "type": "integer"
+                    "type": "number"
                   }
                 },
                 "type": "object"
@@ -14515,8 +14493,7 @@
           },
           "payout": {
             "description": "Ratio of payout scaling.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "question": {
             "description": "Contract question (i.e. \"Will this happen on this date?\")",
@@ -14528,8 +14505,7 @@
           },
           "strike": {
             "description": "Contract strike.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "strike_label": {
             "description": "Strike label to display.",
@@ -14572,8 +14548,7 @@
                 },
                 "strike": {
                   "description": "Contract strike price.",
-                  "format": "int32",
-                  "type": "integer"
+                  "type": "number"
                 },
                 "strike_label": {
                   "description": "Strike label to display.",
@@ -14611,8 +14586,7 @@
           },
           "payout": {
             "description": "Ratio of payout scaling.",
-            "format": "int32",
-            "type": "integer"
+            "type": "number"
           },
           "symbol": {
             "description": "Market symbol.",
@@ -15920,8 +15894,7 @@
             },
             "exchangerate": {
               "description": "Exchange rate of this currency relative to the account's base currency.",
-              "format": "int32",
-              "type": "integer"
+              "type": "number"
             },
             "funds": {
               "description": "The value of the given account's mutual fund holdings in this currency.",
@@ -16452,8 +16425,7 @@
                 },
                 "exchangeRate": {
                   "description": "Used internally for client portal. Should be ignored.",
-                  "format": "int32",
-                  "type": "integer"
+                  "type": "number"
                 },
                 "flags": {
                   "description": "Used internally for client portal. Should be ignored.",
@@ -17225,8 +17197,7 @@
                         },
                         "val": {
                           "description": "Returns the Net Asset Value of the account.",
-                          "format": "int32",
-                          "type": "integer"
+                          "type": "number"
                         }
                       },
                       "type": "object"
@@ -17321,23 +17292,19 @@
                 "properties": {
                   "dpl": {
                     "description": "Daily PnL for the specified account profile.",
-                    "format": "int32",
-                    "type": "integer"
+                    "type": "number"
                   },
                   "el": {
                     "description": "Excess Liquidity for the specified account profile.",
-                    "format": "int32",
-                    "type": "integer"
+                    "type": "number"
                   },
                   "mv": {
                     "description": "Margin value for the specified account profile.",
-                    "format": "int32",
-                    "type": "integer"
+                    "type": "number"
                   },
                   "nl": {
                     "description": "Net Liquidity for the specified account profile.",
-                    "format": "int32",
-                    "type": "integer"
+                    "type": "number"
                   },
                   "rowType": {
                     "description": "Returns the positional value of the returned account. Always returns 1 for individual accounts.",
@@ -17346,8 +17313,7 @@
                   },
                   "upl": {
                     "description": "Unrealized PnL for the specified account profile.",
-                    "format": "int32",
-                    "type": "integer"
+                    "type": "number"
                   }
                 },
                 "type": "object"
@@ -20430,8 +20396,7 @@
                 },
                 "amt": {
                   "description": "Returns the total value of the trade.",
-                  "format": "int32",
-                  "type": "integer"
+                  "type": "number"
                 },
                 "conid": {
                   "description": "Returns the contract identifier.",
@@ -20457,8 +20422,7 @@
                 },
                 "pr": {
                   "description": "Returns the price per share of the transaction.",
-                  "format": "int32",
-                  "type": "integer"
+                  "type": "number"
                 },
                 "qty": {
                   "description": "Returns the total quantity traded. Will display a negative value for sell orders, and a positive value for buy orders.\n",
@@ -20603,8 +20567,7 @@
                 },
                 "multiplier": {
                   "description": "The contract multiplier.",
-                  "format": "int32",
-                  "type": "integer"
+                  "type": "number"
                 },
                 "name": {
                   "description": "The company name.",

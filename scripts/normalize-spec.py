@@ -43,6 +43,10 @@ Transformations applied:
      oas3-gen's `StringWithCommaSeparator` wrapper only handles strings on the
      wire; an array of `integer` items fails compilation. The serialized form
      is identical either way, so stringifying the item type is harmless.
+ 13. Widen `integer`-typed fields whose examples contain decimals to `number`.
+     IBKR occasionally declares fields like `SMA` as `integer` but ships
+     floating-point values in their own example payloads. Coerce the schema
+     to `number` so the generated Rust type can actually round-trip the data.
 
 Usage:
     python3 scripts/normalize-spec.py INPUT.json OUTPUT.json
@@ -262,6 +266,94 @@ def collapse_multi_content_responses(spec: dict[str, Any]) -> int:
             collapsed += 1
 
     return collapsed
+
+
+def widen_integer_fields_with_float_examples(spec: dict[str, Any]) -> int:
+    """Scan operation example payloads and widen any `integer` schema field
+    whose example value is a non-integer float to `number`.
+
+    Walks the whole paths tree looking for `examples.*.value` objects, then
+    for each key in those values it finds the corresponding schema in
+    `components.schemas` (flat scan — the script is 8KB so nested schemas
+    get checked transitively via a BFS). When a schema declares a property
+    as `type: integer` but the example provides a float, we rewrite the
+    property's type to `number`.
+    """
+    # Build an index of schema properties keyed by their leaf field name.
+    # Many property names collide (e.g. "balance"), so the index is
+    # best-effort: if two schemas both have a `balance` property with
+    # different types, we widen only the ones whose sibling fields in the
+    # same example also match that schema's field set — but for MVP we
+    # just widen any property matching the field name, which is lossy but
+    # harmless because widening integer→number doesn't lose information.
+    prop_index: dict[str, list[dict[str, Any]]] = {}
+    schemas = spec.get("components", {}).get("schemas", {}) or {}
+
+    def index_properties(schema: Any) -> None:
+        if not isinstance(schema, dict):
+            return
+        props = schema.get("properties")
+        if isinstance(props, dict):
+            for name, value in props.items():
+                if isinstance(value, dict):
+                    prop_index.setdefault(name, []).append(value)
+                    # Recurse — properties can themselves declare nested
+                    # object schemas (e.g. an object whose items have
+                    # their own `balance` field).
+                    index_properties(value)
+        items = schema.get("items")
+        if isinstance(items, dict):
+            index_properties(items)
+        add = schema.get("additionalProperties")
+        if isinstance(add, dict):
+            index_properties(add)
+        for nested in ("allOf", "oneOf", "anyOf"):
+            for child in schema.get(nested, []) or []:
+                index_properties(child)
+
+    for schema in schemas.values():
+        index_properties(schema)
+
+    widened = 0
+
+    def walk_example(value: Any) -> None:
+        nonlocal widened
+        if not isinstance(value, dict):
+            return
+        for key, val in value.items():
+            # JSON has no int/float distinction at the type level, but
+            # Python's parser *does* — any literal with a decimal point
+            # comes back as `float`. Even "368538.0" (mathematically an
+            # integer) counts, because serde_json on the Rust side also
+            # treats it as a non-integral Number and refuses to
+            # deserialise into i32.
+            if isinstance(val, float) and not isinstance(val, bool):
+                for prop_schema in prop_index.get(key, []):
+                    if prop_schema.get("type") == "integer":
+                        prop_schema["type"] = "number"
+                        prop_schema.pop("format", None)
+                        widened += 1
+            elif isinstance(val, (dict, list)):
+                if isinstance(val, dict):
+                    walk_example(val)
+                else:
+                    for item in val:
+                        walk_example(item)
+
+    def walk_paths(obj: Any) -> None:
+        if isinstance(obj, dict):
+            if "examples" in obj and isinstance(obj["examples"], dict):
+                for ex in obj["examples"].values():
+                    if isinstance(ex, dict) and "value" in ex:
+                        walk_example(ex["value"])
+            for v in obj.values():
+                walk_paths(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                walk_paths(item)
+
+    walk_paths(spec.get("paths", {}))
+    return widened
 
 
 def stringify_numeric_array_query_params(spec: dict[str, Any]) -> int:
@@ -632,6 +724,7 @@ def main() -> int:
     cookies = demote_cookie_params(spec)
     ws = drop_websocket_ops(spec)
     arrs = stringify_numeric_array_query_params(spec)
+    widened = widen_integer_fields_with_float_examples(spec)
     multi = collapse_multi_content_responses(spec)
 
     with open(dst, "w", encoding="utf-8") as f:
@@ -649,6 +742,7 @@ def main() -> int:
         f"rewrote {cookies} cookie params to headers, "
         f"dropped {ws} websocket upgrade ops, "
         f"stringified {arrs} numeric-array queries, "
+        f"widened {widened} integer fields, "
         f"collapsed {multi} multi-content responses"
     )
     return 0
