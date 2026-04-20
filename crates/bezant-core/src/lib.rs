@@ -44,10 +44,14 @@
 mod auth;
 mod client;
 mod error;
+mod helpers;
+pub mod ws;
 
 pub use auth::{AuthStatus, KeepaliveHandle, TickleResponse};
 pub use client::{Client, ClientBuilder, DEFAULT_BASE_URL};
 pub use error::{Error, Result};
+pub use helpers::{ContractSummary, Position, SymbolCache};
+pub use ws::{MarketDataFields, WsClient, WsMessage};
 
 /// Re-export of the auto-generated API crate for callers that want raw access.
 pub use bezant_api as api;

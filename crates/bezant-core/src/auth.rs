@@ -47,6 +47,7 @@ impl Client {
     ///
     /// # Errors
     /// Transport + decode errors; [`Error::Api`] for any underlying error.
+    #[tracing::instrument(skip(self), level = "debug")]
     pub async fn auth_status(&self) -> Result<AuthStatus> {
         let resp = self
             .api()
@@ -69,6 +70,7 @@ impl Client {
     ///
     /// # Errors
     /// Transport + decode errors.
+    #[tracing::instrument(skip(self), level = "debug")]
     pub async fn tickle(&self) -> Result<TickleResponse> {
         let resp = self
             .api()
@@ -97,6 +99,7 @@ impl Client {
     ///
     /// # Errors
     /// See variants.
+    #[tracing::instrument(skip(self), level = "debug")]
     pub async fn health(&self) -> Result<AuthStatus> {
         let status = self.auth_status().await?;
         if !status.connected {
