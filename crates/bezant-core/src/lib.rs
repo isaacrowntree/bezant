@@ -22,12 +22,15 @@
 //! # async fn run() -> bezant::Result<()> {
 //! use std::time::Duration;
 //!
-//! let client = bezant::Client::new("https://localhost:5000")?;
+//! let client = bezant::Client::new("https://localhost:5000/v1/api")?;
 //! let _keepalive = client.spawn_keepalive(Duration::from_secs(60));
 //! client.health().await?;  // errors early if the user hasn't logged in
 //!
 //! // drop into the generated client for real work:
-//! let accounts = client.api().get_accounts().await?;
+//! let _ = client
+//!     .api()
+//!     .get_all_accounts(bezant::api::GetAllAccountsRequest::default())
+//!     .await?;
 //! # Ok(())
 //! # }
 //! ```

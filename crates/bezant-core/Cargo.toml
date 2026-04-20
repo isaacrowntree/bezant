@@ -27,4 +27,6 @@ tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["macros", "rt", "time"] }
+wiremock = "0.6"
+serde_json = { workspace = true }

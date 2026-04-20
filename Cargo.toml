@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/bezant-spec", "crates/bezant-api", "crates/bezant-core", "xtask"]
+members = ["crates/bezant-spec", "crates/bezant-api", "crates/bezant-core", "crates/bezant-server", "xtask"]
 
 [workspace.package]
 version = "0.1.0"

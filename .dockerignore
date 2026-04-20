@@ -1,0 +1,8 @@
+/target
+.git
+.github
+docs
+*.md
+!crates/*/README.md
+!README.md
+.DS_Store

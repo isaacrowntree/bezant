@@ -19,6 +19,7 @@ Not on crates.io yet. API may evolve.
 | [`bezant-spec`](crates/bezant-spec) | Vendored + normalised copy of the IBKR OpenAPI spec |
 | [`bezant-api`](crates/bezant-api) | Auto-generated Rust client covering all ~155 endpoints (167 typed methods, 1030 types) |
 | [`bezant`](crates/bezant-core) | Ergonomic facade — keepalive task, health check, typed `Client` with sensible defaults |
+| [`bezant-server`](crates/bezant-server) | HTTP sidecar exposing the CPAPI over plain REST so any language can consume it |
 
 ## Quickstart
 
@@ -47,6 +48,22 @@ async fn main() -> bezant::Result<()> {
 
     Ok(())
 }
+```
+
+## One-command setup via Docker
+
+```sh
+docker compose up
+```
+
+Brings up the IBKR Client Portal Gateway on <https://localhost:5000>
+(log in once via browser) + `bezant-server` on <http://localhost:8080>.
+Then e.g.:
+
+```sh
+curl http://localhost:8080/health
+curl http://localhost:8080/accounts
+curl "http://localhost:8080/accounts/DU123456/positions?page=0"
 ```
 
 ## Prerequisites

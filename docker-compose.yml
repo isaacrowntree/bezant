@@ -1,0 +1,45 @@
+# Turn-key local deployment: IBKR Client Portal Gateway + bezant-server.
+#
+#   docker compose up
+#
+#   1. Opens the Gateway on https://localhost:5000 — log in once in a
+#      browser with your IBKR credentials + 2FA.
+#   2. bezant-server exposes REST at http://localhost:8080 once the
+#      Gateway reports an authenticated session.
+#
+# Health check the sidecar with:  curl http://localhost:8080/health
+
+services:
+  ib-gateway:
+    # The official IBKR Client Portal Gateway isn't on Docker Hub;
+    # gnzsnz/clientportal is the de-facto community image tracking it.
+    # Pin by tag/digest for reproducible deployments.
+    image: ghcr.io/gnzsnz/clientportal:latest
+    container_name: bezant-ib-gateway
+    ports:
+      - "127.0.0.1:5000:5000"
+    restart: unless-stopped
+    networks:
+      - bezant
+
+  bezant-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bezant-server
+    depends_on:
+      - ib-gateway
+    environment:
+      IBKR_GATEWAY_URL: "https://ib-gateway:5000/v1/api"
+      BEZANT_BIND: "0.0.0.0:8080"
+      BEZANT_KEEPALIVE_SECS: "60"
+      RUST_LOG: "bezant_server=info,bezant=info,tower_http=info"
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+    networks:
+      - bezant
+
+networks:
+  bezant:
+    driver: bridge

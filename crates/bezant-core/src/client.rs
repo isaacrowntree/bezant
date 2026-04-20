@@ -51,6 +51,19 @@ impl Client {
     pub fn api(&self) -> &bezant_api::IbRestApiClient {
         &self.inner.api
     }
+
+    /// Borrow the underlying `reqwest::Client` for untyped HTTP passthrough
+    /// (e.g. when you want to proxy CPAPI calls rather than decode them).
+    #[must_use]
+    pub fn http(&self) -> &reqwest::Client {
+        &self.inner.api.client
+    }
+
+    /// Base URL the client is pointed at (e.g. `https://localhost:5000/v1/api`).
+    #[must_use]
+    pub fn base_url(&self) -> &url::Url {
+        &self.inner.api.base_url
+    }
 }
 
 /// Builder for [`Client`].
