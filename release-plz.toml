@@ -11,12 +11,6 @@ release_always = false
 # releases; we release it alongside the rest on a normal cadence.
 semver_check = true
 
-# Skip the spec + generated crates from auto-publish (we gate them manually
-# since they're tightly coupled and change with upstream spec revisions).
-[[package]]
-name = "bezant-spec"
-publish = false
-
-[[package]]
-name = "bezant-api"
-publish = false
+# We publish every workspace crate together. release-plz walks the dep
+# graph so `bezant-spec` + `bezant-api` (the generated pair) ship before
+# the consumers that depend on them.
