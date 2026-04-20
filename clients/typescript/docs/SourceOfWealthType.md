@@ -1,0 +1,40 @@
+
+# SourceOfWealthType
+
+
+## Properties
+
+Name | Type
+------------ | -------------
+`description` | string
+`percentage` | number
+`sourceType` | string
+`usedForFunds` | boolean
+
+## Example
+
+```typescript
+import type { SourceOfWealthType } from 'bezant-client'
+
+// TODO: Update the object below with actual values
+const example = {
+  "description": null,
+  "percentage": null,
+  "sourceType": null,
+  "usedForFunds": null,
+} satisfies SourceOfWealthType
+
+console.log(example)
+
+// Convert the instance to a JSON string
+const exampleJSON: string = JSON.stringify(example)
+console.log(exampleJSON)
+
+// Parse the JSON string back to an object
+const exampleParsed = JSON.parse(exampleJSON) as SourceOfWealthType
+console.log(exampleParsed)
+```
+
+[[Back to top]](#) [[Back to API list]](../README.md#api-endpoints) [[Back to Model list]](../README.md#models) [[Back to README]](../README.md)
+
+

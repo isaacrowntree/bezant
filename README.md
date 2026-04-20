@@ -14,12 +14,13 @@ Not on crates.io yet. API may evolve.
 
 ## What's in the box
 
-| Crate | Role |
+| Crate / package | Role |
 |---|---|
 | [`bezant-spec`](crates/bezant-spec) | Vendored + normalised copy of the IBKR OpenAPI spec |
 | [`bezant-api`](crates/bezant-api) | Auto-generated Rust client covering all ~155 endpoints (167 typed methods, 1030 types) |
-| [`bezant`](crates/bezant-core) | Ergonomic facade — keepalive task, health check, typed `Client` with sensible defaults |
+| [`bezant`](crates/bezant-core) | Ergonomic Rust facade — keepalive, WebSocket streaming, pagination, symbol cache |
 | [`bezant-server`](crates/bezant-server) | HTTP sidecar exposing the CPAPI over plain REST so any language can consume it |
+| [`bezant-client` (TS)](clients/typescript) | Auto-generated TypeScript client for Node / Deno / browser consumers |
 
 ## Quickstart
 

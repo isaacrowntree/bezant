@@ -4,3 +4,8 @@ Cargo.lock.bak
 *.swp
 .env
 .env.local
+
+# TypeScript client build artefacts
+clients/typescript/dist/
+clients/typescript/node_modules/
+clients/typescript/package-lock.json

@@ -1,0 +1,30 @@
+{
+  "name": "bezant-client",
+  "version": "0.1.0",
+  "description": "TypeScript client for the IBKR Client Portal Web API — auto-generated from the bezant OpenAPI spec",
+  "author": "Isaac Rowntree <isaac@triptech.com>",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/isaacrowntree/bezant.git",
+    "directory": "clients/typescript"
+  },
+  "keywords": [
+    "ibkr",
+    "interactive-brokers",
+    "trading",
+    "finance",
+    "api-client"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "module": "./dist/esm/index.js",
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc && tsc -p tsconfig.esm.json",
+    "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^6.0"
+  }
+}
