@@ -61,7 +61,7 @@ jobs:
           <link rel="canonical" href="bezant/index.html">
           HTML
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: docs/book
 
