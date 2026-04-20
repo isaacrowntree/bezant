@@ -55,3 +55,7 @@ pub use ws::{MarketDataFields, WsClient, WsMessage};
 
 /// Re-export of the auto-generated API crate for callers that want raw access.
 pub use bezant_api as api;
+
+/// Re-export of [`url::Url`] so callers can name the return type of
+/// [`Client::base_url`] without adding `url` to their own `Cargo.toml`.
+pub use url::Url;

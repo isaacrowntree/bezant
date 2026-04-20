@@ -91,6 +91,53 @@ async fn health_maps_unauthorized_to_401_with_code() {
 }
 
 #[tokio::test]
+async fn health_maps_disconnected_session_to_503() {
+    let gateway = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/api/iserver/auth/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "authenticated": true,
+            "connected": false,
+            "competing": false,
+            "message": ""
+        })))
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, body) = response_body(resp).await;
+    // Gateway reports connected=false → facade returns NoSession → 503.
+    assert_eq!(status, StatusCode::OK); // health is projected, not error-mapped
+    assert_eq!(body["connected"], json!(false));
+    assert_eq!(body["authenticated"], json!(true));
+}
+
+#[tokio::test]
+async fn unknown_route_returns_404() {
+    let gateway = MockServer::start().await;
+    let app = make_app(&gateway).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/does-not-exist")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn accounts_passthrough_forwards_body_verbatim() {
     let gateway = MockServer::start().await;
     Mock::given(method("GET"))

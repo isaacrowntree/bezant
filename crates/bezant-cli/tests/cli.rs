@@ -102,6 +102,102 @@ async fn pretty_flag_adds_newlines() {
 }
 
 #[tokio::test]
+async fn summary_prints_gateway_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/api/portfolio/DU123/summary"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "netliquidation": {"amount": 1234.5, "currency": "USD"}
+        })))
+        .mount(&server)
+        .await;
+
+    let mut cmd = Command::cargo_bin("bezant").expect("binary");
+    let assertion = cmd
+        .args(["--gateway-url", &gateway_base(&server), "summary", "DU123"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).to_string();
+    let body: Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(body["netliquidation"]["amount"], json!(1234.5));
+}
+
+#[tokio::test]
+async fn positions_paginates_and_flattens() {
+    let server = MockServer::start().await;
+    let page0: Vec<Value> = (0..30).map(|i| json!({"conid": 1000 + i})).collect();
+    Mock::given(method("GET"))
+        .and(path("/v1/api/portfolio/DU123/positions/0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!(page0)))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/api/portfolio/DU123/positions/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"conid": 9999}])))
+        .mount(&server)
+        .await;
+
+    let mut cmd = Command::cargo_bin("bezant").expect("binary");
+    let assertion = cmd
+        .args([
+            "--gateway-url",
+            &gateway_base(&server),
+            "positions",
+            "DU123",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).to_string();
+    let body: Value = serde_json::from_str(stdout.trim()).expect("json");
+    let arr = body.as_array().expect("array");
+    assert_eq!(arr.len(), 31);
+    assert_eq!(arr[30]["conid"], json!(9999));
+}
+
+#[tokio::test]
+async fn conid_resolves_symbol() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/api/iserver/secdef/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"conid": "265598", "companyName": "Apple Inc"}
+        ])))
+        .mount(&server)
+        .await;
+
+    let mut cmd = Command::cargo_bin("bezant").expect("binary");
+    let assertion = cmd
+        .args(["--gateway-url", &gateway_base(&server), "conid", "AAPL"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).to_string();
+    let body: Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(body["symbol"], json!("AAPL"));
+    assert_eq!(body["conid"], json!(265_598));
+}
+
+#[tokio::test]
+async fn tickle_reports_session_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/api/tickle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "session": "sess-xyz"
+        })))
+        .mount(&server)
+        .await;
+
+    let mut cmd = Command::cargo_bin("bezant").expect("binary");
+    let assertion = cmd
+        .args(["--gateway-url", &gateway_base(&server), "tickle"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).to_string();
+    let body: Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(body["session"], json!("sess-xyz"));
+}
+
+#[tokio::test]
 async fn health_reports_error_on_401() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

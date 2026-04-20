@@ -123,31 +123,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             )?;
         }
         Cmd::Accounts => {
-            let resp = client
-                .api()
-                .get_all_accounts(bezant_api::GetAllAccountsRequest::default())
-                .await?;
-            match resp {
-                bezant_api::GetAllAccountsResponse::Ok(_) => {
-                    // `Account200Response2` is Deserialize-only, so we re-fetch
-                    // as a raw JSON value via the facade's underlying HTTP
-                    // client. This keeps CLI output uniform.
-                    let raw = fetch_json(&client, &["portfolio", "accounts"]).await?;
-                    print_json(&raw, cli.pretty)?;
-                }
-                bezant_api::GetAllAccountsResponse::Unauthorized => {
-                    anyhow::bail!("gateway is not authenticated — log in via the browser first");
-                }
-                bezant_api::GetAllAccountsResponse::InternalServerError => {
-                    anyhow::bail!("upstream 500")
-                }
-                bezant_api::GetAllAccountsResponse::ServiceUnavailable => {
-                    anyhow::bail!("gateway service unavailable")
-                }
-                bezant_api::GetAllAccountsResponse::Unknown => {
-                    anyhow::bail!("unknown upstream response")
-                }
-            }
+            // CLI output is always JSON so we skip the typed client here and
+            // pass the Gateway's body straight through. The facade keeps the
+            // typed `get_all_accounts` for Rust consumers who want it.
+            let raw = fetch_json(&client, &["portfolio", "accounts"]).await?;
+            print_json(&raw, cli.pretty)?;
         }
         Cmd::Summary { account } => {
             let raw = fetch_json(&client, &["portfolio", account.as_str(), "summary"]).await?;

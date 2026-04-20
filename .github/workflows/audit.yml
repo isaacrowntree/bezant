@@ -8,6 +8,12 @@ on:
       - "**/Cargo.lock"
       - "deny.toml"
       - ".github/workflows/audit.yml"
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "deny.toml"
+      - ".github/workflows/audit.yml"
   schedule:
     - cron: "0 8 * * 1"  # Mondays 08:00 UTC
   workflow_dispatch:
