@@ -15,6 +15,15 @@ RUN curl -fsSL https://download2.interactivebrokers.com/portal/clientportal.gw.z
     && unzip -q /tmp/gw.zip -d /gw \
     && rm /tmp/gw.zip
 
+# The Gateway ships with an `ips.allow` list in root/conf.yaml that only
+# permits `127.0.0.1`, `192.*`, and `131.216.*` — connections from any
+# other IP (Railway TCP proxy, Cloud Run, k8s ingress) get an "Access
+# Denied" page before the login UI can even render. We overlay our own
+# conf.yaml that widens the allow list to `.*` so the container works
+# behind a reverse proxy. Port 5000 still shouldn't be exposed to the open
+# internet without auth in front — see README.
+COPY conf.yaml /gw/root/conf.yaml
+
 # Gateway listens on HTTPS 5000 by default.
 EXPOSE 5000
 
