@@ -246,6 +246,95 @@ async fn contract_search_posts_json_body() {
 }
 
 #[tokio::test]
+async fn account_orders_list_passes_account_query() {
+    let gateway = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/api/iserver/account/orders"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "orders": []
+        })))
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/accounts/DU123/orders")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, body) = response_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["orders"].is_array());
+}
+
+#[tokio::test]
+async fn submit_order_forwards_body_to_cpapi() {
+    let gateway = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/api/iserver/account/DU123/orders"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"order_id": "abc123", "order_status": "Submitted"}
+        ])))
+        .mount(&gateway)
+        .await;
+
+    let body = json!({
+        "orders": [{
+            "conid": 265598,
+            "orderType": "MKT",
+            "side": "BUY",
+            "quantity": 10,
+            "tif": "DAY"
+        }]
+    });
+    let app = make_app(&gateway).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/accounts/DU123/orders")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, body) = response_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body[0]["order_id"], json!("abc123"));
+}
+
+#[tokio::test]
+async fn cancel_order_forwards_delete_to_cpapi() {
+    let gateway = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/v1/api/iserver/account/DU123/order/abc123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "msg": "Request was submitted"
+        })))
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/accounts/DU123/orders/abc123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, _) = response_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn market_snapshot_requires_conids_param() {
     let gateway = MockServer::start().await;
     let app = make_app(&gateway).await;

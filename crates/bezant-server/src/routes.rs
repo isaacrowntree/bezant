@@ -13,7 +13,7 @@ use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -30,6 +30,14 @@ pub fn router(state: AppState) -> Router {
         .route("/accounts/{account_id}/summary", get(account_summary))
         .route("/accounts/{account_id}/positions", get(account_positions))
         .route("/accounts/{account_id}/ledger", get(account_ledger))
+        .route(
+            "/accounts/{account_id}/orders",
+            get(account_orders).post(submit_order),
+        )
+        .route(
+            "/accounts/{account_id}/orders/{order_id}",
+            delete(cancel_order),
+        )
         .route("/contracts/search", get(contract_search))
         .route("/market/snapshot", get(market_snapshot))
         .with_state(state)
@@ -89,6 +97,77 @@ async fn account_ledger(
     Path(account_id): Path<String>,
 ) -> Result<Response<Body>, AppError> {
     passthrough_get(&state, &["portfolio", account_id.as_str(), "ledger"], &[]).await
+}
+
+/// List live + recently-filled orders for one account.
+async fn account_orders(
+    State(state): State<AppState>,
+    Path(account_id): Path<String>,
+) -> Result<Response<Body>, AppError> {
+    // CPAPI exposes this under /iserver/account/orders?accountId=…
+    passthrough_get(
+        &state,
+        &["iserver", "account", "orders"],
+        &[("accountId", account_id.as_str())],
+    )
+    .await
+}
+
+/// Submit one or more orders for an account.
+///
+/// The body is forwarded verbatim to `POST /iserver/account/{id}/orders`.
+/// CPAPI accepts either `{ "orders": [...] }` or a single order object; we
+/// stay out of the way and let IBKR's own validator surface errors.
+async fn submit_order(
+    State(state): State<AppState>,
+    Path(account_id): Path<String>,
+    axum::extract::Json(body): axum::extract::Json<serde_json::Value>,
+) -> Result<Response<Body>, AppError> {
+    let mut url = state.client().base_url().clone();
+    {
+        let mut segs = url
+            .path_segments_mut()
+            .map_err(|()| bezant::Error::other("base url cannot be a base"))?;
+        segs.push("iserver")
+            .push("account")
+            .push(account_id.as_str())
+            .push("orders");
+    }
+    let resp = state
+        .client()
+        .http()
+        .post(url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(bezant::Error::Http)?;
+    forward(resp).await
+}
+
+/// Cancel a live order.
+async fn cancel_order(
+    State(state): State<AppState>,
+    Path((account_id, order_id)): Path<(String, String)>,
+) -> Result<Response<Body>, AppError> {
+    let mut url = state.client().base_url().clone();
+    {
+        let mut segs = url
+            .path_segments_mut()
+            .map_err(|()| bezant::Error::other("base url cannot be a base"))?;
+        segs.push("iserver")
+            .push("account")
+            .push(account_id.as_str())
+            .push("order")
+            .push(order_id.as_str());
+    }
+    let resp = state
+        .client()
+        .http()
+        .delete(url)
+        .send()
+        .await
+        .map_err(bezant::Error::Http)?;
+    forward(resp).await
 }
 
 #[derive(Deserialize)]
