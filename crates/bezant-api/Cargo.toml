@@ -1,0 +1,31 @@
+[package]
+name = "bezant-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Auto-generated Rust client for the IBKR Client Portal Web API"
+keywords = ["ibkr", "interactive-brokers", "trading", "finance", "openapi"]
+categories = ["api-bindings", "finance"]
+readme = "README.md"
+
+[lib]
+name = "bezant_api"
+path = "src/lib.rs"
+
+[dependencies]
+bezant-spec = { path = "../bezant-spec", version = "0.1.0" }
+
+# Runtime dependencies the generated client expects.
+anyhow = "1"
+http = "1"
+oas3-gen-support = "0.25"
+reqwest = { workspace = true, features = ["multipart"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = "3"
+validator = { version = "0.20", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }

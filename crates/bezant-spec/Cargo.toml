@@ -1,0 +1,20 @@
+[package]
+name = "bezant-spec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Vendored IBKR Client Portal Web API OpenAPI 3.0 specification"
+keywords = ["ibkr", "interactive-brokers", "openapi", "spec"]
+categories = ["api-bindings", "finance"]
+readme = "README.md"
+
+[lib]
+name = "bezant_spec"
+path = "src/lib.rs"
+
+[dev-dependencies]
+serde_json = { workspace = true }

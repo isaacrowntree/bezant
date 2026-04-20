@@ -1,0 +1,30 @@
+[package]
+name = "bezant-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Ergonomic facade over bezant-api: session keepalive, pagination, symbol resolution, typed errors for the IBKR CPAPI"
+keywords = ["ibkr", "interactive-brokers", "trading", "finance", "api"]
+categories = ["api-bindings", "finance"]
+readme = "README.md"
+
+[lib]
+name = "bezant"
+path = "src/lib.rs"
+
+[dependencies]
+bezant-api = { path = "../bezant-api", version = "0.1.0" }
+anyhow = "1"
+reqwest = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
