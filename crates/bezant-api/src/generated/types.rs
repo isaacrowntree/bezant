@@ -1724,10 +1724,10 @@ pub enum CancelOpenOrderResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -1802,10 +1802,10 @@ pub enum CloseAllMdStreamsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -1855,10 +1855,10 @@ pub enum CloseMdStreamResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -1960,10 +1960,10 @@ pub enum ConfirmOrderReplyResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -2397,10 +2397,10 @@ pub enum CreateAlertResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: Internal Server Error. Unable to process request if incoming values are not valid. For example operator is "abc" Or if modification request contains unmodified fields
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -2446,10 +2446,10 @@ pub enum CreateAllocationGroupResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -2677,10 +2677,10 @@ pub enum DeleteWatchlistResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -3767,7 +3767,7 @@ pub enum GetAccountMarketSummaryResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -3822,7 +3822,7 @@ pub enum GetAccountOwnersResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -3878,7 +3878,7 @@ pub enum GetAccountSummaryResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -3924,10 +3924,10 @@ pub enum GetAccountsInModelResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -3991,7 +3991,7 @@ pub enum GetAlertDetailsResponse {
     ///500: orderId is not parsable; unable to process request
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4073,10 +4073,10 @@ pub enum GetAlgosByInstrumentResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4134,10 +4134,10 @@ pub enum GetAllAccountsForConidResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4179,10 +4179,10 @@ pub enum GetAllAccountsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4228,7 +4228,7 @@ pub enum GetAllAlertsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4290,10 +4290,10 @@ pub enum GetAllFyisResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4339,10 +4339,10 @@ pub enum GetAllModelPositionsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4386,10 +4386,10 @@ pub enum GetAllSubaccountsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4444,10 +4444,10 @@ pub enum GetAllWatchlistsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4491,10 +4491,10 @@ pub enum GetAllmodelsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4537,10 +4537,10 @@ pub enum GetAllocatableSubaccountsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4584,10 +4584,10 @@ pub enum GetAllocationGroupsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4629,10 +4629,10 @@ pub enum GetAllocationPresetsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4698,10 +4698,10 @@ pub enum GetAssetAllocationResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4778,7 +4778,7 @@ pub enum GetBalanceSummaryResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4835,10 +4835,10 @@ pub enum GetBondFiltersResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4885,7 +4885,7 @@ pub enum GetBrokerageAccountsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -4978,10 +4978,10 @@ pub enum GetComboPositionsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -5040,10 +5040,10 @@ pub enum GetConidsByExchangeResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -5116,10 +5116,10 @@ pub enum GetContractInfoResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -5164,10 +5164,10 @@ pub enum GetContractRulesResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -5264,10 +5264,10 @@ pub enum GetContractStrikesResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -5400,10 +5400,10 @@ pub enum GetContractSymbolsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -5462,10 +5462,10 @@ pub enum GetCurrencyPairsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -5517,7 +5517,7 @@ pub enum GetDynamicAccountsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -5580,10 +5580,10 @@ pub enum GetExchangeRatesResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -5627,10 +5627,10 @@ pub enum GetForecastCategoriesResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -5685,10 +5685,10 @@ pub enum GetForecastContractResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -5745,10 +5745,10 @@ pub enum GetForecastMarketsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -5801,10 +5801,10 @@ pub enum GetForecastRulesResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -5859,10 +5859,10 @@ pub enum GetForecastScheduleResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -5916,7 +5916,7 @@ pub enum GetFundSummaryResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -5973,10 +5973,10 @@ pub enum GetFutureBySymbolResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -6017,10 +6017,10 @@ pub enum GetFyiDeliveryResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -6093,10 +6093,10 @@ pub enum GetFyiDisclaimerssResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -6137,10 +6137,10 @@ pub enum GetFyiSettingsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -7759,10 +7759,10 @@ pub enum GetInfoAndRulesResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -7822,10 +7822,10 @@ pub enum GetInstrumentDefinitionResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -7878,10 +7878,10 @@ pub enum GetInstrumentInfoResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -7929,10 +7929,10 @@ pub enum GetInvestedAccountsInModelResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -8039,10 +8039,10 @@ pub enum GetManySubaccountsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -8099,7 +8099,7 @@ pub enum GetMarginSummaryResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -8218,10 +8218,10 @@ pub enum GetMdHistoryResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -8391,10 +8391,10 @@ pub enum GetMdSnapshotResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -8438,10 +8438,10 @@ pub enum GetModelPresetsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -8487,10 +8487,10 @@ pub enum GetModelSummarySingleResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -8604,10 +8604,10 @@ pub enum GetOpenOrdersResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -8661,10 +8661,10 @@ pub enum GetOrderStatusResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -8743,10 +8743,10 @@ pub enum GetPaginatedPositionsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -8826,10 +8826,10 @@ pub enum GetPerformanceAllPeriodsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -8873,7 +8873,7 @@ pub enum GetPnlResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -8925,10 +8925,10 @@ pub enum GetPortfolioLedgerResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -8982,10 +8982,10 @@ pub enum GetPortfolioMetadataResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -9039,10 +9039,10 @@ pub enum GetPortfolioSummaryResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -9107,10 +9107,10 @@ pub enum GetPositionByConidResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -9154,10 +9154,10 @@ pub enum GetScannerParametersResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -9211,10 +9211,10 @@ pub enum GetScannerResultsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -9323,10 +9323,10 @@ pub enum GetSingleAllocationGroupResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -9378,10 +9378,10 @@ pub enum GetSinglePerformancePeriodResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -9440,10 +9440,10 @@ pub enum GetSpecificWatchlistResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -9505,10 +9505,10 @@ pub enum GetStockBySymbolResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -9558,10 +9558,10 @@ pub enum GetTradeHistoryResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -9687,10 +9687,10 @@ pub enum GetTradingScheduleGetTrsrvSecdefScheduleResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -9746,10 +9746,10 @@ pub enum GetTradingScheduleResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -9799,10 +9799,10 @@ pub enum GetTransactionsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -9888,10 +9888,10 @@ pub enum GetUncachedPositionsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -9938,10 +9938,10 @@ pub enum GetUnreadFyisResponse {
     ///423: Return if called too frequently. Should not be called more than 1 time in 5 minutes
     Locked,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -10336,10 +10336,10 @@ pub enum InitializeSessionResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -10693,10 +10693,10 @@ pub enum InvalidatePositionCacheResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -12122,10 +12122,10 @@ pub enum ModifyFyiDeliveryResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -12172,10 +12172,10 @@ pub enum ModifyFyiEmailsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -12296,10 +12296,10 @@ pub enum ModifyOpenOrderResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -15192,10 +15192,10 @@ pub enum PostNewWatchlistResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -15420,10 +15420,10 @@ pub enum PreviewMarginImpactResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -16209,10 +16209,10 @@ pub enum ReadFyiNotificationResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -16385,7 +16385,7 @@ pub enum ReqAccessTokenResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -16462,7 +16462,7 @@ pub enum ReqLiveSessionTokenResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -16525,7 +16525,7 @@ pub enum ReqTempTokenResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -16680,10 +16680,10 @@ pub enum ResetOrderSuppressionResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -17063,10 +17063,10 @@ pub enum SetAccountinvestmentInModelResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -17112,10 +17112,10 @@ pub enum SetActiveAccountResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: Internal Server Error. Unable to process request if incoming values are not valid. For example accountId is not correct
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -17161,10 +17161,10 @@ pub enum SetAllocationPresetResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -17241,10 +17241,10 @@ pub enum SetModelPresetsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -17291,10 +17291,10 @@ pub enum SetModelTargetPositionsResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -17870,10 +17870,10 @@ pub enum SubmitModelOrdersResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -17927,10 +17927,10 @@ pub enum SubmitNewOrderResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,
@@ -18255,10 +18255,10 @@ pub enum SuppressOrderRepliesResponse {
     ///401: Invalid or expired access token
     Unauthorized,
     /**500: internal server error, returned when incoming request cannot be processed. It can sometimes include subset of bad requests.  For example, wrong accountId passed and it can only be detected later in handling request. Error contains reason of the problem.
-    */
+     */
     InternalServerError,
     /**503: service is unavailable. For example if request takes more than 10s due to some internal service unavailability,  request aborted and this status returned
-    */
+     */
     ServiceUnavailable,
     ///default: Unknown response
     Unknown,

@@ -18,8 +18,19 @@
 //! [`bezant`]: https://docs.rs/bezant
 //! [`oas3-gen`]: https://github.com/eklipse2k8/oas3-gen
 
+// Generated code — we don't hold it to our hand-written clippy standards.
+// Every crate that consumes `bezant-api` has these allows applied transitively
+// to silence the noise.
 #![allow(dead_code)]
 #![allow(missing_docs)]
+#![allow(clippy::all)]
+#![allow(clippy::pedantic)]
+#![allow(clippy::nursery)]
+#![allow(clippy::cargo)]
+#![allow(non_camel_case_types)]
+#![allow(non_snake_case)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
 
 pub mod generated;
 

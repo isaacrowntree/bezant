@@ -1,0 +1,11 @@
+# Default reviewer for everything
+*                           @isaacrowntree
+
+# Spec + codegen pipeline
+/crates/bezant-spec/**      @isaacrowntree
+/crates/bezant-api/**       @isaacrowntree
+/scripts/**                 @isaacrowntree
+
+# Docs + site
+/docs/**                    @isaacrowntree
+/README.md                  @isaacrowntree

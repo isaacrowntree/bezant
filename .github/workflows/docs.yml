@@ -1,0 +1,77 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "crates/**"
+      - "README.md"
+      - "ROADMAP.md"
+      - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build book + rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install mdbook
+        run: |
+          cargo install --locked mdbook --version '^0.4'
+
+      - name: Sync roadmap / changelog / contributing / security into book
+        run: |
+          cp ROADMAP.md docs/src/reference/roadmap.md
+          cp CHANGELOG.md docs/src/reference/changelog.md
+          cp CONTRIBUTING.md docs/src/contributing.md
+          cp SECURITY.md docs/src/security.md
+
+      - name: Build mdbook
+        run: mdbook build docs
+
+      - name: Build rustdoc
+        env:
+          RUSTDOCFLAGS: -D warnings --cfg docsrs
+        run: |
+          cargo doc --workspace --no-deps
+          # Mount rustdoc under /rustdoc/ in the final site
+          mkdir -p docs/book/rustdoc
+          cp -r target/doc/. docs/book/rustdoc/
+          # Root landing — redirect the rustdoc index into bezant
+          cat > docs/book/rustdoc/index.html <<'HTML'
+          <!doctype html>
+          <meta http-equiv="refresh" content="0; url=bezant/index.html">
+          <link rel="canonical" href="bezant/index.html">
+          HTML
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/book
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

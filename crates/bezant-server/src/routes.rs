@@ -21,7 +21,8 @@ use std::collections::HashMap;
 use crate::error::AppError;
 use crate::state::AppState;
 
-/// Build the full axum router wired to `state`.
+/// Build the full axum router wired to `state`. Exposed for integration
+/// tests that want to drive the router without opening a TCP listener.
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -108,11 +109,13 @@ async fn contract_search(
     Query(q): Query<ContractSearchQuery>,
 ) -> Result<Response<Body>, AppError> {
     // Symbol lookup is a POST with a JSON body on the CPAPI side.
-    let url = state
-        .client()
-        .base_url()
-        .join("iserver/secdef/search")
-        .map_err(|e| bezant::Error::other(format!("url build: {e}")))?;
+    let mut url = state.client().base_url().clone();
+    {
+        let mut segs = url
+            .path_segments_mut()
+            .map_err(|()| bezant::Error::other("base url cannot be a base"))?;
+        segs.push("iserver").push("secdef").push("search");
+    }
     let body = serde_json::json!({
         "symbol": q.symbol,
         "name": q.name,

@@ -9,3 +9,6 @@ Cargo.lock.bak
 clients/typescript/dist/
 clients/typescript/node_modules/
 clients/typescript/package-lock.json
+
+# mdbook output
+docs/book/

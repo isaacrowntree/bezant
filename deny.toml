@@ -1,0 +1,43 @@
+# cargo-deny configuration.
+#
+# Run `cargo deny check` locally, and in CI under `.github/workflows/audit.yml`,
+# to catch license, vuln, and unmaintained-crate issues before they ship.
+#
+# Tuned for a dual-licensed (MIT OR Apache-2.0) project whose dependency tree
+# is an actual-broker dependency graph (so we allow BSD / ISC / Unicode
+# licenses as well).
+
+[graph]
+all-features = false
+
+[advisories]
+ignore = []
+version = 2
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "Zlib",
+    "OpenSSL",
+    "MPL-2.0",
+]
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

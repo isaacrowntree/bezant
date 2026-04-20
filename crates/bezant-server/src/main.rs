@@ -32,9 +32,7 @@ use clap::Parser;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
-mod error;
-mod routes;
-mod state;
+use bezant_server::{router, AppState};
 
 /// CLI for running the Bezant HTTP sidecar.
 #[derive(Debug, Parser)]
@@ -85,8 +83,8 @@ async fn main() -> anyhow::Result<()> {
     // Keepalive runs for the lifetime of the server.
     let _keepalive = client.spawn_keepalive(Duration::from_secs(args.keepalive_secs));
 
-    let state = state::AppState::new(client);
-    let app = routes::router(state).layer(TraceLayer::new_for_http());
+    let state = AppState::new(client);
+    let app = router(state).layer(TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await

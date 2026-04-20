@@ -1,5 +1,5 @@
 [package]
-name = "bezant-server"
+name = "bezant-mcp"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,17 +7,17 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
-description = "HTTP sidecar exposing the bezant IBKR CPAPI client over REST"
-keywords = ["ibkr", "interactive-brokers", "trading", "http", "sidecar"]
+description = "Model Context Protocol server exposing the IBKR CPAPI as MCP tools"
+keywords = ["ibkr", "interactive-brokers", "mcp", "claude", "llm"]
 categories = ["command-line-utilities", "finance"]
 readme = "README.md"
 
 [lib]
-name = "bezant_server"
+name = "bezant_mcp"
 path = "src/lib.rs"
 
 [[bin]]
-name = "bezant-server"
+name = "bezant-mcp"
 path = "src/main.rs"
 
 [dependencies]
@@ -25,20 +25,15 @@ bezant-core = { path = "../bezant-core", version = "0.1.0" }
 bezant-api = { path = "../bezant-api", version = "0.1.0" }
 
 anyhow = "1"
-axum = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
-reqwest = { workspace = true }
+rmcp = { version = "1.5", features = ["server", "client", "macros", "transport-io", "schemars"] }
+schemars = "0.8"
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
 tokio = { workspace = true }
-tower-http = { version = "0.6", features = ["trace", "cors"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-url = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt", "net"] }
-tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "io-util"] }
 wiremock = "0.6"

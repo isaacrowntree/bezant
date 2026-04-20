@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & discussion
+    url: https://github.com/isaacrowntree/bezant/discussions
+    about: For usage questions, architecture discussions, or anything that's not a bug.
+  - name: Security disclosure
+    url: https://github.com/isaacrowntree/bezant/security/policy
+    about: Please report security issues privately — see SECURITY.md.

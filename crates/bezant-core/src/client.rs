@@ -38,7 +38,6 @@ impl Client {
     }
 
     /// Return a builder for fine-grained configuration.
-    #[must_use]
     pub fn builder(base_url: impl AsRef<str>) -> ClientBuilder {
         ClientBuilder::new(base_url)
     }

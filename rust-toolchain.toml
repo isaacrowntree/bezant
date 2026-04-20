@@ -1,0 +1,6 @@
+[toolchain]
+# We pin to `stable` because some recent dependencies start requiring
+# edition 2024 (stabilised in Rust 1.85). Bumping the floor in Cargo.toml
+# matches this.
+channel = "stable"
+components = ["rustfmt", "clippy"]

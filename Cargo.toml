@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/bezant-spec", "crates/bezant-api", "crates/bezant-core", "crates/bezant-server", "xtask"]
+members = ["crates/bezant-spec", "crates/bezant-api", "crates/bezant-core", "crates/bezant-server", "crates/bezant-cli", "crates/bezant-mcp", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/isaacrowntree/bezant"
 homepage = "https://github.com/isaacrowntree/bezant"

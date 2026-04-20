@@ -1,0 +1,22 @@
+# release-plz config
+# https://release-plz.ieni.dev/docs/config
+
+[workspace]
+changelog_update = true
+git_release_enable = true
+git_tag_enable = true
+publish_allow_dirty = false
+release_always = false
+# The auto-generated api crate changes frequently and doesn't need per-spec
+# releases; we release it alongside the rest on a normal cadence.
+semver_check = true
+
+# Skip the spec + generated crates from auto-publish (we gate them manually
+# since they're tightly coupled and change with upstream spec revisions).
+[[package]]
+name = "bezant-spec"
+publish = false
+
+[[package]]
+name = "bezant-api"
+publish = false
