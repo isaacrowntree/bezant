@@ -32,7 +32,7 @@ RUN sed -i 's/- 192\.\*/- 10.*\n        - 100.*\n        - 172.*\n        - 192.
 FROM eclipse-temurin:17-jre
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tini ca-certificates \
+    && apt-get install -y --no-install-recommends tini ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /gw

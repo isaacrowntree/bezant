@@ -5,9 +5,13 @@
 
 set -e
 
+echo "[entrypoint] starting combined sidecar (gateway + bezant-server)" >&2
 cd /gw
-bin/run.sh root/conf.yaml &
+# Tee the Gateway's stdout+stderr to our own so Railway captures it even
+# if Java decides to re-open file descriptors.
+bin/run.sh root/conf.yaml 2>&1 &
 GW_PID=$!
+echo "[entrypoint] Gateway pid=$GW_PID, probing :5000" >&2
 
 # Wait up to 60s for the Gateway to bind :5000 before launching bezant-server.
 # A naked /dev/tcp probe is enough — we only need the port open, not a valid
@@ -21,10 +25,20 @@ for _ in $(seq 1 60); do
 done
 
 if ! kill -0 "$GW_PID" 2>/dev/null; then
-    echo "[entrypoint] Gateway failed to start within 60s" >&2
+    echo "[entrypoint] Gateway process died before :5000 came up" >&2
     exit 1
 fi
 
+# One final HTTPS probe: the TCP port can be open while Jetty is still
+# wiring routes, which makes bezant-server's first /tickle race.
+for _ in $(seq 1 30); do
+    if curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:5000/v1/api/iserver/auth/status | grep -qE '^[234]'; then
+        break
+    fi
+    sleep 1
+done
+
+echo "[entrypoint] Gateway is responsive, starting bezant-server" >&2
 /usr/local/bin/bezant-server &
 BZ_PID=$!
 
