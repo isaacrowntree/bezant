@@ -62,10 +62,15 @@ impl Client {
             .push("auth")
             .push("status");
         url.set_query(None);
+        // Akamai (in front of CPAPI) refuses POSTs that reach it
+        // without a Content-Length header — even an empty `Vec<u8>`
+        // body isn't enough if reqwest decides to serialize it with
+        // Transfer-Encoding: chunked. Setting the header explicitly
+        // forces a `Content-Length: 0` wire representation.
         let resp = self
             .http()
             .post(url)
-            .body(Vec::<u8>::new())
+            .header(reqwest::header::CONTENT_LENGTH, "0")
             .send()
             .await
             .map_err(Error::Http)?;
