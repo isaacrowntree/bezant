@@ -140,7 +140,14 @@ async fn passthrough_any(
         }
     }
     if method != Method::GET && method != Method::HEAD {
-        builder = builder.body(body_bytes.to_vec());
+        // Pin Content-Length even for empty bodies — Akamai (fronting
+        // the CPAPI) returns 411 if the POST arrives with neither
+        // Content-Length nor Transfer-Encoding, which is the wire
+        // shape reqwest/hyper can produce for an empty Vec.
+        let len = body_bytes.len();
+        builder = builder
+            .header(reqwest::header::CONTENT_LENGTH, len.to_string())
+            .body(body_bytes.to_vec());
     }
 
     let resp = builder.send().await.map_err(bezant::Error::Http)?;
