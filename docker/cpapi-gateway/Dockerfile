@@ -22,12 +22,15 @@ RUN curl -fsSL https://download2.interactivebrokers.com/portal/clientportal.gw.z
 # patterns with `*` (any IP). Port 5000 still shouldn't be exposed to the
 # open internet without auth in front — the Gateway itself does no
 # request-level auth. See README.
-# `ips.allow` entries are compiled as Java regex (not globs) — proof:
-# a literal "*" triggers PatternSyntaxException: Dangling meta character '*'.
-# Replace the first limiting pattern with `.*` (matches anything) and drop
-# the second so we don't need to touch the rest of the file's whitespace.
-RUN sed -i 's/- 192\.\*/- .*/' /gw/root/conf.yaml \
-    && sed -i '/- 131\.216\.\*/d' /gw/root/conf.yaml \
+# `ips.allow` entries are matched by an IPv4Validator that expects
+# octet-glob patterns like `192.*` — it *also* tries each entry as a
+# regex somewhere in the pipeline, which is why `*` alone blows up with
+# `Dangling meta character`, but `.*` blows up with `invalidate ip
+# address`. Safe answer: keep the glob form, just widen it to cover the
+# Railway internal ranges we've observed (CGNAT `100.64/10` for proxy
+# ingress, `10.*` for Railway private networking) plus the LAN defaults
+# already allowed upstream.
+RUN sed -i 's/- 192\.\*/- 10.*\n        - 100.*\n        - 172.*\n        - 192.*/' /gw/root/conf.yaml \
     && cat /gw/root/conf.yaml
 
 # Gateway listens on HTTPS 5000 by default.
