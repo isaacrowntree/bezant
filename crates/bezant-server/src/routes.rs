@@ -13,7 +13,7 @@ use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -40,7 +40,68 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/contracts/search", get(contract_search))
         .route("/market/snapshot", get(market_snapshot))
+        // Anything we haven't explicitly wrapped falls through to the
+        // Gateway verbatim. The big reason this matters: the CPGateway's
+        // interactive login flow (`/sso/Login`, static JS/CSS/img assets,
+        // `/v1/api/iserver/auth/ssodh/init`, …) has to run through
+        // *this* HTTP client so its cookie jar captures the session. Any
+        // future endpoints we add to bezant-server just take precedence
+        // over this catch-all via specific routes.
+        .fallback(passthrough_any)
         .with_state(state)
+}
+
+async fn passthrough_any(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+) -> Result<Response<Body>, AppError> {
+    use axum::http::Method;
+    let method = req.method().clone();
+    let path_and_query = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/")
+        .to_string();
+
+    // Compose the target URL: Gateway base + the incoming URI.
+    let gateway_base = state.client().base_url();
+    let base_str = gateway_base
+        .as_str()
+        .trim_end_matches('/')
+        .trim_end_matches("/v1/api")
+        .trim_end_matches('/');
+    let target = format!("{base_str}{path_and_query}");
+
+    let headers = req.headers().clone();
+    let body_bytes = axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024)
+        .await
+        .map_err(|e| bezant::Error::other(format!("read body: {e}")))?;
+
+    let method_reqwest = reqwest::Method::from_bytes(method.as_str().as_bytes())
+        .map_err(|e| bezant::Error::other(format!("method: {e}")))?;
+    let mut builder = state.client().http().request(method_reqwest, &target);
+    for (name, value) in headers.iter() {
+        // Drop hop-by-hop + host headers — reqwest rebuilds them.
+        let n = name.as_str().to_ascii_lowercase();
+        if matches!(
+            n.as_str(),
+            "host" | "content-length" | "connection" | "transfer-encoding"
+        ) {
+            continue;
+        }
+        if let Ok(v) = reqwest::header::HeaderValue::from_bytes(value.as_bytes()) {
+            if let Ok(name) = reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes()) {
+                builder = builder.header(name, v);
+            }
+        }
+    }
+    if method != Method::GET && method != Method::HEAD {
+        builder = builder.body(body_bytes.to_vec());
+    }
+
+    let resp = builder.send().await.map_err(bezant::Error::Http)?;
+    forward(resp).await
 }
 
 #[derive(Serialize)]
