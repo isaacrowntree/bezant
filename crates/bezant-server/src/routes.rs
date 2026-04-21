@@ -86,6 +86,7 @@ async fn passthrough_any(
     // empty, and every server-side request to /iserver/* gets bounced
     // back to the login page.
     let jar = state.client().cookie_jar();
+    let mut injected = 0usize;
     for cookie_header in headers.get_all(axum::http::header::COOKIE) {
         if let Ok(raw) = cookie_header.to_str() {
             for pair in raw.split(';') {
@@ -99,9 +100,19 @@ async fn passthrough_any(
                 let set_cookie = format!("{pair}; Path=/");
                 if let Ok(hv) = reqwest::header::HeaderValue::from_str(&set_cookie) {
                     jar.set_cookies(&mut std::iter::once(&hv), &target_url);
+                    injected += 1;
                 }
             }
         }
+    }
+    if injected > 0 {
+        tracing::info!(
+            path = %path_and_query,
+            cookies = injected,
+            "passthrough injected browser cookies into shared jar"
+        );
+    } else {
+        tracing::debug!(path = %path_and_query, "passthrough: no browser cookies");
     }
 
     let body_bytes = axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024)
