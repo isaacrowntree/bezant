@@ -72,6 +72,7 @@ pub struct ClientBuilder {
     accept_invalid_certs: bool,
     timeout: Duration,
     user_agent: String,
+    follow_redirects: bool,
 }
 
 impl ClientBuilder {
@@ -82,6 +83,7 @@ impl ClientBuilder {
             accept_invalid_certs: true,
             timeout: Duration::from_secs(30),
             user_agent: format!("bezant/{}", env!("CARGO_PKG_VERSION")),
+            follow_redirects: true,
         }
     }
 
@@ -105,16 +107,33 @@ impl ClientBuilder {
         self
     }
 
+    /// Follow HTTP redirects automatically. Defaults to `true` (reqwest's
+    /// normal 10-hop policy). Set to `false` when you're operating as a
+    /// reverse proxy and want 3xx responses passed through to the caller —
+    /// otherwise the browser ends up seeing the redirected body at the
+    /// original URL, which breaks relative asset paths on pages like
+    /// CPGateway's `/sso/Login`.
+    pub fn follow_redirects(mut self, follow: bool) -> Self {
+        self.follow_redirects = follow;
+        self
+    }
+
     /// Finish configuration and build the [`Client`].
     ///
     /// # Errors
     /// Propagates URL parse errors and reqwest build errors.
     pub fn build(self) -> Result<Client> {
+        let redirect_policy = if self.follow_redirects {
+            reqwest::redirect::Policy::default()
+        } else {
+            reqwest::redirect::Policy::none()
+        };
         let http = reqwest::Client::builder()
             .cookie_store(true)
             .danger_accept_invalid_certs(self.accept_invalid_certs)
             .timeout(self.timeout)
             .user_agent(&self.user_agent)
+            .redirect(redirect_policy)
             .build()
             .map_err(Error::Http)?;
 

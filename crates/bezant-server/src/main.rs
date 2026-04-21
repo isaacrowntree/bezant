@@ -77,6 +77,11 @@ async fn main() -> anyhow::Result<()> {
 
     let client = bezant::Client::builder(&args.gateway_url)
         .accept_invalid_certs(!args.reject_invalid_certs)
+        // bezant-server acts as a reverse proxy: 3xx responses from the
+        // Gateway must reach the browser as 3xx so it can follow the
+        // Location header itself — otherwise redirected HTML arrives at
+        // the original URL and relative asset paths break.
+        .follow_redirects(false)
         .build()
         .context("building bezant client")?;
 

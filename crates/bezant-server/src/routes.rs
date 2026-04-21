@@ -325,41 +325,34 @@ async fn passthrough_get(
 
 /// Forward a `reqwest::Response` as an axum response.
 ///
-/// We copy `content-type` and every `set-cookie` header through so the
-/// browser can complete multi-step flows like `/sso/Login`. The Gateway
-/// issues session cookies with `Secure; SameSite=None`; deployments need
-/// to terminate TLS before bezant-server (a Railway-style HTTPS edge
-/// works out of the box) — over plain HTTP the browser would reject the
-/// SameSite=None cookie regardless of what we do to the Secure flag. The
-/// internal reqwest client keeps the cookie in its own jar anyway, so
-/// bezant-server's typed API calls stay authenticated even if the
-/// browser drops the cookie.
+/// Copies every response header through so that multi-step Gateway flows
+/// (SSO redirects, session cookies, cache headers on static assets)
+/// reach the browser unchanged. Hop-by-hop headers that a new transport
+/// will rebuild — `content-length`, `transfer-encoding`, `connection` —
+/// are dropped. The Gateway issues session cookies with
+/// `Secure; SameSite=None`, so deployments need TLS in front of
+/// bezant-server (a Railway-style HTTPS edge works out of the box).
 async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
     let status = resp.status();
-    let content_type = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("application/json")
-        .to_owned();
-    let set_cookies: Vec<String> = resp
-        .headers()
-        .get_all(reqwest::header::SET_COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .map(|s| s.to_owned())
-        .collect();
+    let headers_src = resp.headers().clone();
     let bytes = resp.bytes().await.map_err(bezant::Error::Http)?;
 
     let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
 
     let mut headers = HeaderMap::new();
-    if let Ok(v) = HeaderValue::from_str(&content_type) {
-        headers.insert(header::CONTENT_TYPE, v);
-    }
-    for cookie in set_cookies {
-        if let Ok(v) = HeaderValue::from_str(&cookie) {
-            headers.append(header::SET_COOKIE, v);
+    for (name, value) in headers_src.iter() {
+        let n = name.as_str().to_ascii_lowercase();
+        if matches!(
+            n.as_str(),
+            "content-length" | "transfer-encoding" | "connection"
+        ) {
+            continue;
+        }
+        if let (Ok(name), Ok(value)) = (
+            header::HeaderName::from_bytes(name.as_str().as_bytes()),
+            HeaderValue::from_bytes(value.as_bytes()),
+        ) {
+            headers.append(name, value);
         }
     }
 
