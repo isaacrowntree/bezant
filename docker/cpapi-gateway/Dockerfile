@@ -22,7 +22,11 @@ RUN curl -fsSL https://download2.interactivebrokers.com/portal/clientportal.gw.z
 # patterns with `*` (any IP). Port 5000 still shouldn't be exposed to the
 # open internet without auth in front — the Gateway itself does no
 # request-level auth. See README.
-RUN sed -i 's/- 192\.\*/- "*"/' /gw/root/conf.yaml \
+# `ips.allow` entries are compiled as Java regex (not globs) — proof:
+# a literal "*" triggers PatternSyntaxException: Dangling meta character '*'.
+# Replace the first limiting pattern with `.*` (matches anything) and drop
+# the second so we don't need to touch the rest of the file's whitespace.
+RUN sed -i 's/- 192\.\*/- .*/' /gw/root/conf.yaml \
     && sed -i '/- 131\.216\.\*/d' /gw/root/conf.yaml \
     && cat /gw/root/conf.yaml
 
