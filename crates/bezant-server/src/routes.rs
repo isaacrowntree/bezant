@@ -326,13 +326,14 @@ async fn passthrough_get(
 /// Forward a `reqwest::Response` as an axum response.
 ///
 /// We copy `content-type` and every `set-cookie` header through so the
-/// browser can complete multi-step flows like `/sso/Login`. Cookies that
-/// arrive with the `Secure` flag are re-emitted *without* it: when
-/// bezant-server is reached over plain HTTP (e.g. via a Railway TCP proxy)
-/// browsers would otherwise drop the cookie and the login flow would
-/// break. The internal reqwest client still has the cookie in its own jar
-/// for authenticated API calls — that's what matters for bezant-server
-/// itself.
+/// browser can complete multi-step flows like `/sso/Login`. The Gateway
+/// issues session cookies with `Secure; SameSite=None`; deployments need
+/// to terminate TLS before bezant-server (a Railway-style HTTPS edge
+/// works out of the box) — over plain HTTP the browser would reject the
+/// SameSite=None cookie regardless of what we do to the Secure flag. The
+/// internal reqwest client keeps the cookie in its own jar anyway, so
+/// bezant-server's typed API calls stay authenticated even if the
+/// browser drops the cookie.
 async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
     let status = resp.status();
     let content_type = resp
@@ -346,13 +347,7 @@ async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
         .get_all(reqwest::header::SET_COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
-        .map(|s| {
-            // Drop any `; Secure` or `;Secure` tokens, case-insensitive.
-            s.split(';')
-                .filter(|part| !part.trim().eq_ignore_ascii_case("secure"))
-                .collect::<Vec<_>>()
-                .join(";")
-        })
+        .map(|s| s.to_owned())
         .collect();
     let bytes = resp.bytes().await.map_err(bezant::Error::Http)?;
 
