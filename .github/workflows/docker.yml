@@ -30,6 +30,10 @@ jobs:
             context: docker/cpapi-gateway
             dockerfile: docker/cpapi-gateway/Dockerfile
             image: isaacrowntree/cpapi-gateway
+          - name: bezant-combined
+            context: .
+            dockerfile: docker/combined/Dockerfile
+            image: isaacrowntree/bezant-combined
     steps:
       - uses: actions/checkout@v4
 
