@@ -128,12 +128,19 @@ impl ClientBuilder {
         } else {
             reqwest::redirect::Policy::none()
         };
+        // Akamai fronts the CPAPI path — an empty POST that travels as
+        // `Transfer-Encoding: chunked` (reqwest's default when the body
+        // is an empty stream over HTTP/2) comes back as
+        // `411 Length Required`. Forcing HTTP/1.1 gives hyper a chance
+        // to serialize empty bodies as `Content-Length: 0`, which the
+        // CDN accepts.
         let http = reqwest::Client::builder()
             .cookie_store(true)
             .danger_accept_invalid_certs(self.accept_invalid_certs)
             .timeout(self.timeout)
             .user_agent(&self.user_agent)
             .redirect(redirect_policy)
+            .http1_only()
             .build()
             .map_err(Error::Http)?;
 
