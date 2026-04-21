@@ -49,6 +49,22 @@ impl Client {
     /// Transport + decode errors; [`Error::Api`] for any underlying error.
     #[tracing::instrument(skip(self), level = "debug")]
     pub async fn auth_status(&self) -> Result<AuthStatus> {
+        // Probe with a raw reqwest call first so we can surface the
+        // actual status + body when the typed parser bails — the
+        // generated `Unknown` variant throws the signal away.
+        if let Ok(mut url) = self.base_url().join("iserver/auth/status") {
+            url.set_query(None);
+            let raw = self
+                .http()
+                .post(url)
+                .body(Vec::<u8>::new())
+                .send()
+                .await
+                .map_err(Error::Http)?;
+            let status = raw.status();
+            let body = raw.text().await.unwrap_or_default();
+            tracing::warn!(%status, body = %body, "auth_status raw probe");
+        }
         let resp = self
             .api()
             .get_brokerage_status(bezant_api::GetBrokerageStatusRequest::default())
