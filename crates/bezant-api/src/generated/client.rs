@@ -2529,7 +2529,7 @@ impl IbRestApiClient {
             .push("iserver")
             .push("auth")
             .push("status");
-        let response = self.client.post(url).send().await?;
+        let response = self.client.post(url).body(Vec::<u8>::new()).send().await?;
         Ok(GetBrokerageStatusRequest::parse_response(response).await?)
     }
     /// Search Contract Rules
@@ -2796,7 +2796,7 @@ impl IbRestApiClient {
             .push("questions")
             .push("suppress")
             .push("reset");
-        let response = self.client.post(url).send().await?;
+        let response = self.client.post(url).body(Vec::<u8>::new()).send().await?;
         Ok(ResetOrderSuppressionRequest::parse_response(response).await?)
     }
     /// Confirm Order Reply Message
@@ -3034,7 +3034,7 @@ impl IbRestApiClient {
         url.path_segments_mut()
             .map_err(|()| anyhow::anyhow!("URL cannot be a base"))?
             .push("logout");
-        let response = self.client.post(url).send().await?;
+        let response = self.client.post(url).body(Vec::<u8>::new()).send().await?;
         Ok(LogoutRequest::parse_response(response).await?)
     }
     /// Generate An Access Token
@@ -3359,7 +3359,7 @@ impl IbRestApiClient {
             .push(&request.path.account_id.to_string())
             .push("positions")
             .push("invalidate");
-        let response = self.client.post(url).send().await?;
+        let response = self.client.post(url).body(Vec::<u8>::new()).send().await?;
         Ok(InvalidatePositionCacheRequest::parse_response(response).await?)
     }
     /// Account Positions
@@ -3472,7 +3472,7 @@ impl IbRestApiClient {
         url.path_segments_mut()
             .map_err(|()| anyhow::anyhow!("URL cannot be a base"))?
             .push("tickle");
-        let response = self.client.post(url).send().await?;
+        let response = self.client.post(url).body(Vec::<u8>::new()).send().await?;
         Ok(GetSessionTokenRequest::parse_response(response).await?)
     }
     /// List All Stock Conids By Exchange

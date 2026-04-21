@@ -45,4 +45,26 @@ oas3-gen generate \
   --output "${GEN_DIR}" \
   client-mod
 
+# Akamai fronts CPAPI and rejects POSTs that arrive without a
+# Content-Length header (status 411). The generator emits
+# `self.client.post(url).send()` for operations with no request body,
+# which makes reqwest omit Content-Length. Injecting a known-empty
+# body forces hyper to serialise Content-Length: 0 which the CDN
+# accepts.
+echo "→ post-patch: force Content-Length: 0 on empty POSTs"
+python3 - <<'PY'
+import pathlib, re
+p = pathlib.Path("crates/bezant-api/src/generated/client.rs")
+src = p.read_text()
+patched = src.replace(
+    "self.client.post(url).send().await?",
+    "self.client.post(url).body(Vec::<u8>::new()).send().await?",
+)
+if patched == src:
+    print("  (no empty-POST sites found; spec may have changed)")
+else:
+    p.write_text(patched)
+    print(f"  patched {patched.count('.body(Vec::<u8>::new())')} site(s)")
+PY
+
 echo "→ done. Run 'cargo build -p bezant-api' to verify."
