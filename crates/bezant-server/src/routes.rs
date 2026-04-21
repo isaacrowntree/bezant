@@ -323,8 +323,16 @@ async fn passthrough_get(
     forward(resp).await
 }
 
-/// Forward a `reqwest::Response` as an axum response with the same status,
-/// content-type, and body bytes.
+/// Forward a `reqwest::Response` as an axum response.
+///
+/// We copy `content-type` and every `set-cookie` header through so the
+/// browser can complete multi-step flows like `/sso/Login`. Cookies that
+/// arrive with the `Secure` flag are re-emitted *without* it: when
+/// bezant-server is reached over plain HTTP (e.g. via a Railway TCP proxy)
+/// browsers would otherwise drop the cookie and the login flow would
+/// break. The internal reqwest client still has the cookie in its own jar
+/// for authenticated API calls — that's what matters for bezant-server
+/// itself.
 async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
     let status = resp.status();
     let content_type = resp
@@ -333,18 +341,34 @@ async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/json")
         .to_owned();
+    let set_cookies: Vec<String> = resp
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .map(|s| {
+            // Drop any `; Secure` or `;Secure` tokens, case-insensitive.
+            s.split(';')
+                .filter(|part| !part.trim().eq_ignore_ascii_case("secure"))
+                .collect::<Vec<_>>()
+                .join(";")
+        })
+        .collect();
     let bytes = resp.bytes().await.map_err(bezant::Error::Http)?;
 
-    // Re-map reqwest's `StatusCode` into axum's via numeric value.
     let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
 
     let mut headers = HeaderMap::new();
     if let Ok(v) = HeaderValue::from_str(&content_type) {
         headers.insert(header::CONTENT_TYPE, v);
     }
+    for cookie in set_cookies {
+        if let Ok(v) = HeaderValue::from_str(&cookie) {
+            headers.append(header::SET_COOKIE, v);
+        }
+    }
 
     let mut response = (status, headers, bytes).into_response();
-    // Ensure we don't clobber the Body variant
     *response.status_mut() = status;
     Ok(response)
 }
