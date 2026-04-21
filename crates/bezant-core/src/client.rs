@@ -4,6 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use reqwest::cookie::Jar;
 use tracing::warn;
 
 use crate::error::{Error, Result};
@@ -23,6 +24,7 @@ pub struct Client {
 
 struct ClientInner {
     api: bezant_api::IbRestApiClient,
+    cookie_jar: Arc<Jar>,
 }
 
 impl Client {
@@ -62,6 +64,17 @@ impl Client {
     #[must_use]
     pub fn base_url(&self) -> &url::Url {
         &self.inner.api.base_url
+    }
+
+    /// Shared cookie jar backing the underlying `reqwest::Client`.
+    ///
+    /// Expose this when you're running bezant alongside a reverse proxy
+    /// (for example bezant-server's `/sso/Login` passthrough): you can
+    /// inject cookies that arrive from the proxied caller so that typed
+    /// API calls made through the same `Client` see the same session.
+    #[must_use]
+    pub fn cookie_jar(&self) -> Arc<Jar> {
+        Arc::clone(&self.inner.cookie_jar)
     }
 }
 
@@ -134,8 +147,9 @@ impl ClientBuilder {
         // `411 Length Required`. Forcing HTTP/1.1 gives hyper a chance
         // to serialize empty bodies as `Content-Length: 0`, which the
         // CDN accepts.
+        let cookie_jar = Arc::new(Jar::default());
         let http = reqwest::Client::builder()
-            .cookie_store(true)
+            .cookie_provider(Arc::clone(&cookie_jar))
             .danger_accept_invalid_certs(self.accept_invalid_certs)
             .timeout(self.timeout)
             .user_agent(&self.user_agent)
@@ -155,7 +169,7 @@ impl ClientBuilder {
             .map_err(|e| Error::InvalidBaseUrl(e.to_string()))?;
 
         Ok(Client {
-            inner: Arc::new(ClientInner { api }),
+            inner: Arc::new(ClientInner { api, cookie_jar }),
         })
     }
 }

@@ -56,6 +56,7 @@ async fn passthrough_any(
     req: axum::extract::Request,
 ) -> Result<Response<Body>, AppError> {
     use axum::http::Method;
+    use reqwest::cookie::CookieStore;
     let method = req.method().clone();
     let path_and_query = req
         .uri()
@@ -72,8 +73,37 @@ async fn passthrough_any(
         .trim_end_matches("/v1/api")
         .trim_end_matches('/');
     let target = format!("{base_str}{path_and_query}");
+    let target_url: reqwest::Url = target
+        .parse()
+        .map_err(|e| bezant::Error::other(format!("target url: {e}")))?;
 
     let headers = req.headers().clone();
+
+    // Copy any cookies the browser sent into the shared jar so typed
+    // API calls (`/health`, `/accounts`, …) see the same session that
+    // the interactive login established. Without this, the browser
+    // holds the JSESSIONID while bezant-server's reqwest jar stays
+    // empty, and every server-side request to /iserver/* gets bounced
+    // back to the login page.
+    let jar = state.client().cookie_jar();
+    for cookie_header in headers.get_all(axum::http::header::COOKIE) {
+        if let Ok(raw) = cookie_header.to_str() {
+            for pair in raw.split(';') {
+                let pair = pair.trim();
+                if pair.is_empty() {
+                    continue;
+                }
+                // `Path=/` lets reqwest send the cookie on every path
+                // under the Gateway host, matching how the browser
+                // treats its own jar for these requests.
+                let set_cookie = format!("{pair}; Path=/");
+                if let Ok(hv) = reqwest::header::HeaderValue::from_str(&set_cookie) {
+                    jar.set_cookies(&mut std::iter::once(&hv), &target_url);
+                }
+            }
+        }
+    }
+
     let body_bytes = axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024)
         .await
         .map_err(|e| bezant::Error::other(format!("read body: {e}")))?;
@@ -82,11 +112,12 @@ async fn passthrough_any(
         .map_err(|e| bezant::Error::other(format!("method: {e}")))?;
     let mut builder = state.client().http().request(method_reqwest, &target);
     for (name, value) in headers.iter() {
-        // Drop hop-by-hop + host headers — reqwest rebuilds them.
+        // Drop hop-by-hop + host + cookie headers — reqwest rebuilds
+        // the host header and sources cookies from the shared jar.
         let n = name.as_str().to_ascii_lowercase();
         if matches!(
             n.as_str(),
-            "host" | "content-length" | "connection" | "transfer-encoding"
+            "host" | "content-length" | "connection" | "transfer-encoding" | "cookie"
         ) {
             continue;
         }
