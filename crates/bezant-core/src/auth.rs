@@ -49,33 +49,38 @@ impl Client {
     /// Transport + decode errors; [`Error::Api`] for any underlying error.
     #[tracing::instrument(skip(self), level = "debug")]
     pub async fn auth_status(&self) -> Result<AuthStatus> {
-        // Probe with a raw reqwest call first so we can surface the
-        // actual status + body when the typed parser bails — the
-        // generated `Unknown` variant throws the signal away.
-        if let Ok(mut url) = self.base_url().join("iserver/auth/status") {
-            url.set_query(None);
-            let raw = self
-                .http()
-                .post(url)
-                .body(Vec::<u8>::new())
-                .send()
-                .await
-                .map_err(Error::Http)?;
-            let status = raw.status();
-            let body = raw.text().await.unwrap_or_default();
-            tracing::warn!(%status, body = %body, "auth_status raw probe");
-        }
+        // We drive a raw POST instead of the generated client so we
+        // can distinguish "no session" (Gateway redirects to login)
+        // from genuine protocol errors. CPAPI returns 302 for
+        // unauthenticated callers — not the 401 the OpenAPI spec
+        // implies — so the auto-generated `Unauthorized` branch never
+        // fires in practice.
+        let mut url = self.base_url().clone();
+        url.path_segments_mut()
+            .map_err(|()| Error::other("base url cannot be a base"))?
+            .push("iserver")
+            .push("auth")
+            .push("status");
+        url.set_query(None);
         let resp = self
-            .api()
-            .get_brokerage_status(bezant_api::GetBrokerageStatusRequest::default())
-            .await?;
-        match resp {
-            bezant_api::GetBrokerageStatusResponse::Ok(status) => Ok(AuthStatus::from(status)),
-            bezant_api::GetBrokerageStatusResponse::Unauthorized => Err(Error::NotAuthenticated),
-            bezant_api::GetBrokerageStatusResponse::Unknown => {
-                Err(Error::other("unknown auth_status response"))
-            }
+            .http()
+            .post(url)
+            .body(Vec::<u8>::new())
+            .send()
+            .await
+            .map_err(Error::Http)?;
+        let status = resp.status();
+        if status.is_redirection() || status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(Error::NotAuthenticated);
         }
+        if !status.is_success() {
+            return Err(Error::other(format!(
+                "auth_status returned {status}"
+            )));
+        }
+        let parsed: bezant_api::BrokerageSessionStatus =
+            resp.json().await.map_err(Error::Http)?;
+        Ok(AuthStatus::from(parsed))
     }
 
     /// Tickle the Gateway (POST `/tickle`) to keep the session alive.
