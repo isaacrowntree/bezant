@@ -6,7 +6,7 @@
 [![Docs](https://github.com/isaacrowntree/bezant/actions/workflows/docs.yml/badge.svg)](https://isaacrowntree.github.io/bezant/)
 [![Audit](https://github.com/isaacrowntree/bezant/actions/workflows/audit.yml/badge.svg)](https://github.com/isaacrowntree/bezant/actions/workflows/audit.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
-[![MSRV: 1.85](https://img.shields.io/badge/MSRV-1.85-orange.svg)](rust-toolchain.toml)
+[![MSRV: 1.89](https://img.shields.io/badge/MSRV-1.89-orange.svg)](Cargo.toml)
 
 > 📖 **Docs:** <https://isaacrowntree.github.io/bezant/> · 📦 **Issues:** <https://github.com/isaacrowntree/bezant/issues>
 

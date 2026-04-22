@@ -40,5 +40,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn fmt_opt(value: Option<f64>) -> String {
-    value.map(|v| format!("{v:.2}")).unwrap_or_else(|| "-".into())
+    value
+        .map(|v| format!("{v:.2}"))
+        .unwrap_or_else(|| "-".into())
 }
