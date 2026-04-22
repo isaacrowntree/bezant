@@ -104,3 +104,19 @@ let resp = client
 
 Client code should pattern-match on the variants it cares about and use
 `_ => ...` for the rest (important because the enum is `#[non_exhaustive]`).
+
+## Runnable examples
+
+Clone the repo and try the bundled examples against the local Docker
+gateway without writing any code:
+
+```sh
+docker compose up -d
+# open https://localhost:5000 once in your browser to log in
+
+cargo run -p bezant-core --example health
+IBKR_ACCOUNT_ID=DU123456 cargo run -p bezant-core --example list_positions
+IBKR_SYMBOL=AAPL        cargo run -p bezant-core --example stream_quotes
+```
+
+Source: [`crates/bezant-core/examples/`](https://github.com/isaacrowntree/bezant/tree/main/crates/bezant-core/examples).
