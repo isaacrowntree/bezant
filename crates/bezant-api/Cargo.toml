@@ -16,6 +16,11 @@ readme = "README.md"
 name = "bezant_api"
 path = "src/lib.rs"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu"]
+
 [dependencies]
 bezant-spec = { path = "../bezant-spec", version = "0.1.0" }
 

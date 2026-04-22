@@ -16,6 +16,15 @@ readme = "README.md"
 name = "bezant"
 path = "src/lib.rs"
 
+[package.metadata.docs.rs]
+# Build all features so docs.rs renders the full surface. `--cfg docsrs`
+# lets us later gate nightly-only doc markers like `#[doc(cfg(...))]` via
+# `#[cfg_attr(docsrs, doc(cfg(feature = "...")))]` without breaking
+# stable rustdoc.
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu"]
+
 [dependencies]
 bezant-api = { path = "../bezant-api", version = "0.1.0" }
 anyhow = "1"

@@ -20,6 +20,11 @@ path = "src/lib.rs"
 name = "bezant-server"
 path = "src/main.rs"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu"]
+
 [dependencies]
 bezant-core = { path = "../bezant-core", version = "0.1.0" }
 bezant-api = { path = "../bezant-api", version = "0.1.0" }
