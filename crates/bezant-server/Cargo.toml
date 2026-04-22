@@ -20,6 +20,9 @@ path = "src/lib.rs"
 name = "bezant-server"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

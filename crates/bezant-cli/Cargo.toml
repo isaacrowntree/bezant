@@ -12,6 +12,9 @@ keywords = ["ibkr", "interactive-brokers", "trading", "cli", "finance"]
 categories = ["command-line-utilities", "finance"]
 readme = "README.md"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "bezant"
 path = "src/main.rs"

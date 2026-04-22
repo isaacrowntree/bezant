@@ -16,6 +16,9 @@ readme = "README.md"
 name = "bezant"
 path = "src/lib.rs"
 
+[lints]
+workspace = true
+
 [package.metadata.docs.rs]
 # Build all features so docs.rs renders the full surface. `--cfg docsrs`
 # lets us later gate nightly-only doc markers like `#[doc(cfg(...))]` via
