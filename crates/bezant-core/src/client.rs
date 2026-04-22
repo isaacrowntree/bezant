@@ -22,6 +22,17 @@ pub struct Client {
     inner: Arc<ClientInner>,
 }
 
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The inner reqwest client doesn't implement Debug cleanly;
+        // project the surface that's useful at trace sites.
+        f.debug_struct("Client")
+            .field("base_url", &self.inner.base_url.as_str())
+            .field("gateway_root", &self.inner.gateway_root.as_str())
+            .finish_non_exhaustive()
+    }
+}
+
 struct ClientInner {
     api: bezant_api::IbRestApiClient,
     http: reqwest::Client,
