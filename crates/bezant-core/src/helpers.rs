@@ -198,9 +198,7 @@ impl SymbolCache {
         };
         let Some(first) = items.first() else {
             lock(&self.cache).insert(symbol.to_owned(), None);
-            return Err(Error::other(format!(
-                "no contracts for symbol '{symbol}'"
-            )));
+            return Err(Error::other(format!("no contracts for symbol '{symbol}'")));
         };
         let conid_str = first
             .conid

@@ -234,11 +234,7 @@ fn derive_gateway_root(base_url: &url::Url) -> url::Url {
         root.set_path(&trimmed);
     }
     if root.path().ends_with("/v1/api") {
-        let new_path = root
-            .path()
-            .strip_suffix("/v1/api")
-            .unwrap_or("")
-            .to_owned();
+        let new_path = root.path().strip_suffix("/v1/api").unwrap_or("").to_owned();
         root.set_path(&new_path);
     }
     // Always end the root with a single '/', so callers can `.join("sso/Login")`.

@@ -433,9 +433,6 @@ mod tests {
 
     #[test]
     fn classify_malformed_text() {
-        assert!(matches!(
-            classify("not-json"),
-            WsMessage::Malformed { .. }
-        ));
+        assert!(matches!(classify("not-json"), WsMessage::Malformed { .. }));
     }
 }

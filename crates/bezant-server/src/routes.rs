@@ -70,11 +70,7 @@ async fn passthrough_any(
     // instead of hand-trimming the base URL so a non-standard prefix
     // doesn't silently break passthrough.
     let gateway_root = state.client().gateway_root_url().as_str();
-    let target = format!(
-        "{}{}",
-        gateway_root.trim_end_matches('/'),
-        path_and_query
-    );
+    let target = format!("{}{}", gateway_root.trim_end_matches('/'), path_and_query);
     let target_url: reqwest::Url = target
         .parse()
         .map_err(|e| bezant::Error::other(format!("target url: {e}")))?;
@@ -434,12 +430,7 @@ async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
 fn strip_cookie_domain(value: &str) -> String {
     value
         .split(';')
-        .filter(|part| {
-            !part
-                .trim()
-                .to_ascii_lowercase()
-                .starts_with("domain=")
-        })
+        .filter(|part| !part.trim().to_ascii_lowercase().starts_with("domain="))
         .collect::<Vec<_>>()
         .join(";")
 }
