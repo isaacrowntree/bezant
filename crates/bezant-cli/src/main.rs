@@ -89,7 +89,17 @@ async fn main() -> ExitCode {
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("bezant: {e:#}");
+            // Print the top-level error plus every `source()` link in
+            // the anyhow chain — TLS / connect failures frequently
+            // carry useful detail in the wrapped causes, and the
+            // single-line `{e:#}` format doesn't surface them.
+            let mut chain = e.chain();
+            if let Some(first) = chain.next() {
+                eprintln!("bezant: {first}");
+            }
+            for cause in chain {
+                eprintln!("  caused by: {cause}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -150,7 +160,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 let arr = raw.as_array().cloned().unwrap_or_default();
                 let n = arr.len();
                 all.extend(arr);
-                if n < 30 {
+                if n < bezant::POSITIONS_PAGE_SIZE {
                     break;
                 }
             }

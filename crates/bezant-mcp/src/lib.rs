@@ -19,7 +19,12 @@ use serde_json::Value;
 /// Built by [`BezantMcp::new`] around a prepared [`bezant::Client`] and a
 /// shared [`bezant::SymbolCache`]. Implements [`rmcp::ServerHandler`] so
 /// it plugs straight into rmcp's stdio / streamable transports.
+///
+/// Marked `#[non_exhaustive]` so extra private fields can be added in a
+/// point release without breaking downstream construction — callers
+/// should always go through [`BezantMcp::new`].
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct BezantMcp {
     /// Typed Bezant client used to call CPAPI endpoints.
     pub client: bezant::Client,
@@ -128,7 +133,7 @@ impl BezantMcp {
             let arr = raw.as_array().cloned().unwrap_or_default();
             let n = arr.len();
             all.extend(arr);
-            if n < 30 {
+            if n < bezant::POSITIONS_PAGE_SIZE {
                 break;
             }
         }

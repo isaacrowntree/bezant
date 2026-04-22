@@ -75,13 +75,33 @@ impl Client {
             .await
             .map_err(Error::Http)?;
         let status = resp.status();
-        if status.is_redirection() || status == reqwest::StatusCode::UNAUTHORIZED {
+        if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(Error::NotAuthenticated);
+        }
+        if status.is_redirection() {
+            // Tighten: only treat redirects that actually aim at the SSO
+            // login flow as "not authenticated". Any other 3xx is a
+            // genuine protocol surprise we'd rather surface verbatim.
+            let location = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if location.contains("/sso/login") || location.contains("/sso/dispatcher") {
+                return Err(Error::NotAuthenticated);
+            }
+            return Err(Error::other(format!(
+                "auth_status returned {status} with unexpected Location: {location}"
+            )));
         }
         if !status.is_success() {
             return Err(Error::other(format!("auth_status returned {status}")));
         }
-        let parsed: bezant_api::BrokerageSessionStatus = resp.json().await.map_err(Error::Http)?;
+        let parsed: bezant_api::BrokerageSessionStatus = resp
+            .json()
+            .await
+            .map_err(|e| Error::Decode(format!("auth_status body: {e}")))?;
         Ok(AuthStatus::from(parsed))
     }
 
@@ -169,9 +189,11 @@ impl Client {
 
 /// Drop-to-stop handle for a background keepalive task.
 ///
-/// Dropping the handle closes the shutdown channel; the background task
-/// exits on its next tick. Call [`KeepaliveHandle::stop`] instead if you
-/// want to await a clean exit.
+/// Dropping the handle signals shutdown, but the spawned task only
+/// observes it on its next tick — so a pending tickle request can
+/// still be in flight when the tokio runtime shuts down. Prefer
+/// [`KeepaliveHandle::stop`] when you need a clean, awaited exit.
+#[derive(Debug)]
 pub struct KeepaliveHandle {
     shutdown: Option<oneshot::Sender<()>>,
     join: Option<tokio::task::JoinHandle<()>>,
@@ -183,7 +205,13 @@ impl KeepaliveHandle {
     /// # Errors
     /// Returns [`Error::Other`] wrapping the JoinError if the task panicked.
     pub async fn stop(mut self) -> Result<()> {
-        drop(self.shutdown.take());
+        // Explicitly send the shutdown signal rather than relying on
+        // drop semantics — makes intent obvious and tolerates the
+        // receiver having already dropped (which is fine, nothing to
+        // do there).
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
         if let Some(join) = self.join.take() {
             join.await
                 .map_err(|e| Error::other(format!("keepalive task panicked: {e}")))?;

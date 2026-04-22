@@ -20,16 +20,28 @@ pub type Position = bezant_api::IndividualPosition;
 /// Contract-search result, alias over the generated type.
 pub type ContractSummary = bezant_api::SecdefSearchResponseSecdefSearchResponse;
 
-const POSITIONS_PAGE_SIZE: usize = 30;
-const MAX_POSITION_PAGES: i32 = 100;
+/// Page size the Gateway returns for paginated position calls.
+///
+/// Exposed so CLIs / sidecars that replicate the page-walking loop don't
+/// have to hard-code `30`. Tracks the size documented in CPAPI —
+/// technically an IBKR-side constant rather than a bezant one, so if the
+/// Gateway ever changes this we'll update the constant and bump the minor.
+pub const POSITIONS_PAGE_SIZE: usize = 30;
+
+/// Safety limit on the number of pages [`Client::all_positions`] will walk.
+///
+/// Three thousand positions is dramatically more than any realistic
+/// rebalance-bot scope; this exists purely to stop a misbehaving Gateway
+/// from spinning us forever.
+pub const MAX_POSITION_PAGES: u32 = 100;
 
 impl Client {
     /// Fetch every position across every page for `account_id`.
     ///
-    /// CPAPI returns up to 30 positions per page; this helper walks pages
-    /// starting from 0 and stops once a short page (or an empty one) is
-    /// returned. An upper bound of 100 pages (~3 000 positions) protects
-    /// against runaway calls if the Gateway returns full pages indefinitely.
+    /// CPAPI returns up to [`POSITIONS_PAGE_SIZE`] entries per page; this
+    /// helper walks pages starting from 0 and stops once a short page (or
+    /// an empty one) is returned. [`MAX_POSITION_PAGES`] caps runaway
+    /// loops.
     ///
     /// # Errors
     /// Any transport / decode failure surfaces as [`Error`]. An
@@ -42,7 +54,10 @@ impl Client {
             let req = bezant_api::GetPaginatedPositionsRequest {
                 path: bezant_api::GetPaginatedPositionsRequestPath {
                     account_id: account_id.to_owned(),
-                    page_id: page,
+                    // The generator models `page_id` as i32, so cast once
+                    // at the request boundary rather than polluting the
+                    // whole helper with a signed loop variable.
+                    page_id: i32::try_from(page).unwrap_or(i32::MAX),
                 },
                 query: bezant_api::GetPaginatedPositionsRequestQuery::default(),
             };
@@ -98,9 +113,20 @@ impl Client {
 /// # Ok(())
 /// # }
 /// ```
+#[derive(Debug)]
 pub struct SymbolCache {
     client: Client,
-    cache: Mutex<HashMap<String, i64>>,
+    // `Option<i64>` so negative lookups (no such symbol) are remembered as
+    // well — repeated typos hit the network exactly once.
+    cache: Mutex<HashMap<String, Option<i64>>>,
+}
+
+/// Poisoned-mutex fallback: the protected state is a `HashMap<String, _>`
+/// with no invariants beyond what the type system already gives us, so if
+/// a panic ever poisoned the mutex we'd rather keep going than abort the
+/// whole process — acquire the lock by taking the inner guard regardless.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl SymbolCache {
@@ -116,21 +142,22 @@ impl SymbolCache {
     /// Return the cached conid for `symbol`, looking it up on first miss.
     ///
     /// Only `STK`-type matches are cached. If you need options / bonds /
-    /// futures, call [`Client::api`] directly.
+    /// futures, call [`Client::api`] directly. Both hits and misses are
+    /// memoised — if a symbol turns out to be invalid, subsequent calls
+    /// return the same [`Error::Other`] without touching the network.
     ///
     /// # Errors
-    /// [`Error::Other`] if the symbol doesn't resolve to any contract, plus
-    /// any transport / decode errors.
+    /// [`Error::Other`] if the symbol doesn't resolve to any contract,
+    /// plus any transport / decode errors.
     #[tracing::instrument(skip(self), fields(symbol = %symbol), level = "debug")]
     pub async fn conid_for(&self, symbol: &str) -> Result<i64> {
-        if let Some(hit) = self
-            .cache
-            .lock()
-            .expect("cache mutex poisoned")
-            .get(symbol)
-            .copied()
-        {
-            return Ok(hit);
+        if let Some(entry) = lock(&self.cache).get(symbol).copied() {
+            return match entry {
+                Some(conid) => Ok(conid),
+                None => Err(Error::other(format!(
+                    "no contracts for symbol '{symbol}' (cached)"
+                ))),
+            };
         }
 
         let req = bezant_api::GetContractSymbolsFromBodyRequest {
@@ -150,7 +177,11 @@ impl SymbolCache {
         let items = match resp {
             bezant_api::GetContractSymbolsResponse::Ok(items) => items,
             bezant_api::GetContractSymbolsResponse::BadRequest => {
-                return Err(Error::other(format!("bad symbol: {symbol}")))
+                // BadRequest means the symbol itself is malformed — cache
+                // the negative so we don't hit the CDN over and over for
+                // a caller that's retrying.
+                lock(&self.cache).insert(symbol.to_owned(), None);
+                return Err(Error::other(format!("bad symbol: {symbol}")));
             }
             bezant_api::GetContractSymbolsResponse::Unauthorized => {
                 return Err(Error::NotAuthenticated)
@@ -165,9 +196,12 @@ impl SymbolCache {
                 return Err(Error::other("unknown upstream response"))
             }
         };
-        let first = items
-            .first()
-            .ok_or_else(|| Error::other(format!("no contracts for symbol '{symbol}'")))?;
+        let Some(first) = items.first() else {
+            lock(&self.cache).insert(symbol.to_owned(), None);
+            return Err(Error::other(format!(
+                "no contracts for symbol '{symbol}'"
+            )));
+        };
         let conid_str = first
             .conid
             .as_deref()
@@ -176,24 +210,18 @@ impl SymbolCache {
             .parse()
             .map_err(|e| Error::other(format!("invalid conid '{conid_str}': {e}")))?;
 
-        self.cache
-            .lock()
-            .expect("cache mutex poisoned")
-            .insert(symbol.to_owned(), conid);
+        lock(&self.cache).insert(symbol.to_owned(), Some(conid));
         Ok(conid)
     }
 
     /// Drop a single entry — useful after IBKR restructures a listing.
     pub fn forget(&self, symbol: &str) {
-        self.cache
-            .lock()
-            .expect("cache mutex poisoned")
-            .remove(symbol);
+        lock(&self.cache).remove(symbol);
     }
 
     /// Clear the whole cache.
     pub fn clear(&self) {
-        self.cache.lock().expect("cache mutex poisoned").clear();
+        lock(&self.cache).clear();
     }
 
     /// Borrow the inner [`Client`] — useful when callers want both the cache

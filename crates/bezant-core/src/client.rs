@@ -24,6 +24,9 @@ pub struct Client {
 
 struct ClientInner {
     api: bezant_api::IbRestApiClient,
+    http: reqwest::Client,
+    base_url: url::Url,
+    gateway_root: url::Url,
     cookie_jar: Arc<Jar>,
 }
 
@@ -57,13 +60,22 @@ impl Client {
     /// (e.g. when you want to proxy CPAPI calls rather than decode them).
     #[must_use]
     pub fn http(&self) -> &reqwest::Client {
-        &self.inner.api.client
+        &self.inner.http
     }
 
-    /// Base URL the client is pointed at (e.g. `https://localhost:5000/v1/api`).
+    /// Base URL the client is pointed at, including the CPAPI prefix
+    /// (e.g. `https://localhost:5000/v1/api`).
     #[must_use]
     pub fn base_url(&self) -> &url::Url {
-        &self.inner.api.base_url
+        &self.inner.base_url
+    }
+
+    /// The Gateway's root URL — [`Client::base_url`] with the CPAPI prefix
+    /// trimmed off (e.g. `https://localhost:5000/`). Useful when you need to
+    /// hit paths the Gateway serves outside `/v1/api` (login, static assets).
+    #[must_use]
+    pub fn gateway_root_url(&self) -> &url::Url {
+        &self.inner.gateway_root
     }
 
     /// Shared cookie jar backing the underlying `reqwest::Client`.
@@ -80,12 +92,14 @@ impl Client {
 
 /// Builder for [`Client`].
 #[must_use]
+#[derive(Debug, Clone)]
 pub struct ClientBuilder {
     base_url: String,
     accept_invalid_certs: bool,
     timeout: Duration,
     user_agent: String,
     follow_redirects: bool,
+    http1_only: bool,
 }
 
 impl ClientBuilder {
@@ -97,6 +111,12 @@ impl ClientBuilder {
             timeout: Duration::from_secs(30),
             user_agent: format!("bezant/{}", env!("CARGO_PKG_VERSION")),
             follow_redirects: true,
+            // Default to HTTP/1.1-only because the production CPAPI path is
+            // fronted by an Akamai CDN that rejects empty POSTs without a
+            // Content-Length header — something hyper can end up emitting
+            // under HTTP/2. See `ClientBuilder::http1_only` for the escape
+            // hatch.
+            http1_only: true,
         }
     }
 
@@ -131,6 +151,17 @@ impl ClientBuilder {
         self
     }
 
+    /// Force HTTP/1.1 only (no ALPN upgrade to HTTP/2). Defaults to `true`
+    /// because IBKR fronts the CPAPI with an Akamai CDN that rejects
+    /// empty-body POSTs shipped over HTTP/2 with `411 Length Required`.
+    /// Flip this to `false` if you're targeting a Gateway deployment that
+    /// does not sit behind Akamai (e.g. a self-hosted instance) and you
+    /// want the latency benefits of HTTP/2.
+    pub fn http1_only(mut self, http1_only: bool) -> Self {
+        self.http1_only = http1_only;
+        self
+    }
+
     /// Finish configuration and build the [`Client`].
     ///
     /// # Errors
@@ -141,22 +172,17 @@ impl ClientBuilder {
         } else {
             reqwest::redirect::Policy::none()
         };
-        // Akamai fronts the CPAPI path — an empty POST that travels as
-        // `Transfer-Encoding: chunked` (reqwest's default when the body
-        // is an empty stream over HTTP/2) comes back as
-        // `411 Length Required`. Forcing HTTP/1.1 gives hyper a chance
-        // to serialize empty bodies as `Content-Length: 0`, which the
-        // CDN accepts.
         let cookie_jar = Arc::new(Jar::default());
-        let http = reqwest::Client::builder()
+        let mut http_builder = reqwest::Client::builder()
             .cookie_provider(Arc::clone(&cookie_jar))
             .danger_accept_invalid_certs(self.accept_invalid_certs)
             .timeout(self.timeout)
             .user_agent(&self.user_agent)
-            .redirect(redirect_policy)
-            .http1_only()
-            .build()
-            .map_err(Error::Http)?;
+            .redirect(redirect_policy);
+        if self.http1_only {
+            http_builder = http_builder.http1_only();
+        }
+        let http = http_builder.build().map_err(Error::Http)?;
 
         if self.accept_invalid_certs {
             warn!(
@@ -165,11 +191,86 @@ impl ClientBuilder {
             );
         }
 
-        let api = bezant_api::IbRestApiClient::with_client(&self.base_url, http)
+        let api = bezant_api::IbRestApiClient::with_client(&self.base_url, http.clone())
             .map_err(|e| Error::InvalidBaseUrl(e.to_string()))?;
+        let base_url: url::Url = self
+            .base_url
+            .parse()
+            .map_err(|e: url::ParseError| Error::InvalidBaseUrl(e.to_string()))?;
+        let gateway_root = derive_gateway_root(&base_url);
 
         Ok(Client {
-            inner: Arc::new(ClientInner { api, cookie_jar }),
+            inner: Arc::new(ClientInner {
+                api,
+                http,
+                base_url,
+                gateway_root,
+                cookie_jar,
+            }),
         })
+    }
+}
+
+/// Strip the CPAPI prefix off `base_url` to recover the Gateway root.
+///
+/// Handles both the `.../v1/api` and `.../v1/api/` forms; returns the
+/// origin (`scheme://host[:port]/`) if we can't identify the prefix.
+fn derive_gateway_root(base_url: &url::Url) -> url::Url {
+    let mut root = base_url.clone();
+    // Normalise away trailing slashes so path segment editing is consistent.
+    if root.path().ends_with('/') {
+        let trimmed = root.path().trim_end_matches('/').to_owned();
+        root.set_path(&trimmed);
+    }
+    if root.path().ends_with("/v1/api") {
+        let new_path = root
+            .path()
+            .strip_suffix("/v1/api")
+            .unwrap_or("")
+            .to_owned();
+        root.set_path(&new_path);
+    }
+    // Always end the root with a single '/', so callers can `.join("sso/Login")`.
+    if !root.path().ends_with('/') {
+        let with_slash = format!("{}/", root.path());
+        root.set_path(&with_slash);
+    }
+    root.set_query(None);
+    root.set_fragment(None);
+    root
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gateway_root_strips_v1_api() {
+        let base: url::Url = "https://localhost:5000/v1/api".parse().unwrap();
+        assert_eq!(
+            derive_gateway_root(&base).as_str(),
+            "https://localhost:5000/"
+        );
+    }
+
+    #[test]
+    fn gateway_root_strips_trailing_slash() {
+        let base: url::Url = "https://localhost:5000/v1/api/".parse().unwrap();
+        assert_eq!(
+            derive_gateway_root(&base).as_str(),
+            "https://localhost:5000/"
+        );
+    }
+
+    #[test]
+    fn gateway_root_preserves_custom_prefix() {
+        // Some self-hosted deployments prefix the CPAPI path with their own
+        // routing — if there's no `/v1/api` suffix we just drop trailing
+        // slashes and keep whatever's there.
+        let base: url::Url = "https://gw.example.com/ibkr/v1/api".parse().unwrap();
+        assert_eq!(
+            derive_gateway_root(&base).as_str(),
+            "https://gw.example.com/ibkr/"
+        );
     }
 }

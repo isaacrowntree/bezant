@@ -65,26 +65,29 @@ async fn passthrough_any(
         .unwrap_or("/")
         .to_string();
 
-    // Compose the target URL: Gateway base + the incoming URI.
-    let gateway_base = state.client().base_url();
-    let base_str = gateway_base
-        .as_str()
-        .trim_end_matches('/')
-        .trim_end_matches("/v1/api")
-        .trim_end_matches('/');
-    let target = format!("{base_str}{path_and_query}");
+    // Compose the target URL: Gateway root + the incoming URI. We use
+    // the client's own derived root (scheme + host + trailing '/')
+    // instead of hand-trimming the base URL so a non-standard prefix
+    // doesn't silently break passthrough.
+    let gateway_root = state.client().gateway_root_url().as_str();
+    let target = format!(
+        "{}{}",
+        gateway_root.trim_end_matches('/'),
+        path_and_query
+    );
     let target_url: reqwest::Url = target
         .parse()
         .map_err(|e| bezant::Error::other(format!("target url: {e}")))?;
 
     let headers = req.headers().clone();
 
-    // Copy any cookies the browser sent into the shared jar so typed
+    // Replay any cookies the browser sent into the shared jar so typed
     // API calls (`/health`, `/accounts`, …) see the same session that
-    // the interactive login established. Without this, the browser
-    // holds the JSESSIONID while bezant-server's reqwest jar stays
-    // empty, and every server-side request to /iserver/* gets bounced
-    // back to the login page.
+    // the interactive login established. Each injection overwrites the
+    // existing entry by name, which avoids both (a) monotonic growth of
+    // the jar as the browser rotates cookies and (b) silent scope
+    // broadening when the browser's cookie was originally scoped to
+    // something narrower than `Path=/`.
     let jar = state.client().cookie_jar();
     let mut injected = 0usize;
     for cookie_header in headers.get_all(axum::http::header::COOKIE) {
@@ -94,9 +97,11 @@ async fn passthrough_any(
                 if pair.is_empty() {
                     continue;
                 }
-                // `Path=/` lets reqwest send the cookie on every path
-                // under the Gateway host, matching how the browser
-                // treats its own jar for these requests.
+                // Reqwest's `Jar::set_cookies` keys entries by
+                // (domain, path, name), so re-setting a cookie with
+                // the same name + path (`/`) replaces the previous
+                // value rather than accumulating. `Path=/` matches how
+                // the browser treats its own jar for these paths.
                 let set_cookie = format!("{pair}; Path=/");
                 if let Ok(hv) = reqwest::header::HeaderValue::from_str(&set_cookie) {
                     jar.set_cookies(&mut std::iter::once(&hv), &target_url);
@@ -381,6 +386,12 @@ async fn passthrough_get(
 /// are dropped. The Gateway issues session cookies with
 /// `Secure; SameSite=None`, so deployments need TLS in front of
 /// bezant-server (a Railway-style HTTPS edge works out of the box).
+///
+/// `Set-Cookie` headers have any `Domain=` attribute stripped before
+/// being emitted to the browser: the Gateway's upstream (IBKR) sets
+/// `Domain=.ibkr.com`, which a browser would immediately discard when
+/// the response arrives from a completely different host. Falling back
+/// to a host-only cookie keeps the flow working behind any hostname.
 async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
     let status = resp.status();
     let headers_src = resp.headers().clone();
@@ -397,13 +408,63 @@ async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
         ) {
             continue;
         }
+        let value_bytes: Vec<u8> = if n == "set-cookie" {
+            match value.to_str() {
+                Ok(raw) => strip_cookie_domain(raw).into_bytes(),
+                Err(_) => value.as_bytes().to_vec(),
+            }
+        } else {
+            value.as_bytes().to_vec()
+        };
         if let (Ok(name), Ok(value)) = (
             header::HeaderName::from_bytes(name.as_str().as_bytes()),
-            HeaderValue::from_bytes(value.as_bytes()),
+            HeaderValue::from_bytes(&value_bytes),
         ) {
             headers.append(name, value);
         }
     }
 
     Ok((status, headers, bytes).into_response())
+}
+
+/// Strip any `Domain=...` attribute from a Set-Cookie value. The browser
+/// will fall back to a host-only cookie scoped to whatever host it saw
+/// the response on, which is what we want when proxying a cookie that
+/// the Gateway pinned to `Domain=.ibkr.com`.
+fn strip_cookie_domain(value: &str) -> String {
+    value
+        .split(';')
+        .filter(|part| {
+            !part
+                .trim()
+                .to_ascii_lowercase()
+                .starts_with("domain=")
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+#[cfg(test)]
+mod forward_tests {
+    use super::strip_cookie_domain;
+
+    #[test]
+    fn drops_ibkr_domain_attribute() {
+        let input = "SID=abc; Domain=.ibkr.com; Path=/; Secure";
+        // Whitespace retention is deliberate — we only drop the Domain
+        // segment and keep the original spacing elsewhere.
+        assert_eq!(strip_cookie_domain(input), "SID=abc; Path=/; Secure");
+    }
+
+    #[test]
+    fn leaves_cookie_without_domain_untouched() {
+        let input = "SID=abc; Path=/; Secure";
+        assert_eq!(strip_cookie_domain(input), input);
+    }
+
+    #[test]
+    fn case_insensitive() {
+        let input = "SID=abc; DOMAIN=ibkr.com; Path=/";
+        assert_eq!(strip_cookie_domain(input), "SID=abc; Path=/");
+    }
 }

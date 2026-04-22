@@ -15,8 +15,21 @@ pub struct ErrorBody {
 }
 
 /// Wraps [`bezant::Error`] so axum handlers can bubble errors with `?`.
+///
+/// The inner error is deliberately private — the HTTP surface exposes
+/// status + code + message, not the whole typed variant. Construct via
+/// `From<bezant::Error>` (i.e. the `?` operator) rather than a literal.
 #[derive(Debug)]
-pub struct AppError(pub bezant::Error);
+pub struct AppError(bezant::Error);
+
+impl AppError {
+    /// Borrow the wrapped error. Prefer matching on the HTTP response
+    /// instead; this exists for logging / tracing use cases.
+    #[must_use]
+    pub fn inner(&self) -> &bezant::Error {
+        &self.0
+    }
+}
 
 impl From<bezant::Error> for AppError {
     fn from(value: bezant::Error) -> Self {
@@ -26,7 +39,7 @@ impl From<bezant::Error> for AppError {
 
 impl From<anyhow::Error> for AppError {
     fn from(value: anyhow::Error) -> Self {
-        Self(bezant::Error::Api(value))
+        Self(bezant::Error::from(value))
     }
 }
 
@@ -36,6 +49,7 @@ impl IntoResponse for AppError {
             bezant::Error::InvalidBaseUrl(_) => (StatusCode::BAD_REQUEST, "invalid_base_url"),
             bezant::Error::Http(_) => (StatusCode::BAD_GATEWAY, "upstream_http_error"),
             bezant::Error::Api(_) => (StatusCode::BAD_GATEWAY, "upstream_api_error"),
+            bezant::Error::Decode(_) => (StatusCode::BAD_GATEWAY, "upstream_decode_error"),
             bezant::Error::NotAuthenticated => (StatusCode::UNAUTHORIZED, "not_authenticated"),
             bezant::Error::NoSession => (StatusCode::SERVICE_UNAVAILABLE, "no_session"),
             bezant::Error::Other(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),

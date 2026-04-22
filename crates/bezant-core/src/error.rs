@@ -5,7 +5,14 @@ use thiserror::Error;
 /// Result alias using [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Boxed error suitable for round-tripping heterogeneous upstream errors.
+type DynError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
 /// Errors that can arise when talking to the Client Portal Gateway.
+///
+/// The enum is `#[non_exhaustive]` — match on the variants you care about
+/// and handle the rest via a catch-all so adding new variants in a point
+/// release is not a breaking change.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
@@ -17,9 +24,17 @@ pub enum Error {
     #[error("http transport error: {0}")]
     Http(#[from] reqwest::Error),
 
-    /// An error bubbled up from the generated API layer.
-    #[error(transparent)]
-    Api(#[from] anyhow::Error),
+    /// A JSON response body could not be decoded into the expected type —
+    /// typically a sign the Gateway sent an HTML error page on top of a
+    /// 2xx status (Akamai error pages, maintenance banners, etc.).
+    #[error("response body decode error: {0}")]
+    Decode(String),
+
+    /// An error bubbled up from the generated API layer. The inner
+    /// boxed error is whatever the generated client raised — this keeps
+    /// `bezant-core`'s public API free of a versioned `anyhow` type.
+    #[error("api error: {0}")]
+    Api(#[source] DynError),
 
     /// The Gateway reports we are not authenticated — the user needs to log
     /// in via the Gateway's browser UI.
@@ -40,5 +55,14 @@ impl Error {
     /// Construct a free-form error.
     pub fn other(msg: impl Into<String>) -> Self {
         Self::Other(msg.into())
+    }
+}
+
+// `anyhow::Error` keeps this conversion convenient for internal callers
+// without leaking the anyhow type through the `Error` enum itself —
+// downstream crates match on `Error::Api` and see a plain boxed error.
+impl From<anyhow::Error> for Error {
+    fn from(e: anyhow::Error) -> Self {
+        Error::Api(e.into())
     }
 }

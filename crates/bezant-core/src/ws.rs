@@ -50,6 +50,7 @@ pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// actually no, WebSocket sinks aren't cheap to split arbitrarily. Keep one
 /// owner per connection and [`WsClient::split`] if you need a read/write
 /// halving.
+#[derive(Debug)]
 pub struct WsClient {
     stream: WsStream,
 }
@@ -77,27 +78,59 @@ pub enum WsMessage {
     Pnl(Value),
     /// Any message whose `topic` we didn't recognise.
     Other(Value),
-    /// The socket emitted a text frame that wasn't valid JSON. Rare; included
-    /// for completeness.
-    Malformed(String),
+    /// The socket emitted a frame we couldn't decode — a text body that
+    /// wasn't valid JSON, or a binary frame converted lossily to UTF-8.
+    /// The decoder's error is captured alongside the original text so
+    /// callers can telemeter parse rates.
+    Malformed {
+        /// The raw (possibly lossy) text the socket delivered.
+        text: String,
+        /// Human-readable reason the decoder gave up — serde JSON error
+        /// for malformed payloads, a "non-UTF-8 binary frame" marker for
+        /// binary decoder losses.
+        error: String,
+    },
 }
 
 /// Market-data field codes used when subscribing. See
 /// [`bezant_api::GetMdSnapshotRequestQuery`] for the documented set on the
 /// REST side — every code listed there works on the WebSocket too.
+///
+/// Kept as an opaque newtype so we can change the internal representation
+/// in a point release without breaking downstream callers.
 #[derive(Debug, Clone)]
-pub struct MarketDataFields(pub Vec<String>);
+pub struct MarketDataFields(Vec<String>);
 
 impl MarketDataFields {
     /// Reasonable default: last price, bid, ask, last size, bid size, ask size.
     #[must_use]
     pub fn default_l1() -> Self {
-        Self(
-            ["31", "84", "86", "85", "88", "87"]
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect(),
-        )
+        Self::from_codes(["31", "84", "86", "85", "88", "87"])
+    }
+
+    /// Build a new [`MarketDataFields`] from any iterator of code strings.
+    pub fn from_codes<I, S>(codes: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self(codes.into_iter().map(Into::into).collect())
+    }
+
+    /// Borrow the underlying field codes — handy when forwarding the same
+    /// set to multiple subscribes, or serialising for logging.
+    #[must_use]
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl<S> FromIterator<S> for MarketDataFields
+where
+    S: Into<String>,
+{
+    fn from_iter<I: IntoIterator<Item = S>>(iter: I) -> Self {
+        Self::from_codes(iter)
     }
 }
 
@@ -161,7 +194,9 @@ impl WsClient {
         struct Body<'a> {
             fields: &'a [String],
         }
-        let body = Body { fields: &fields.0 };
+        let body = Body {
+            fields: fields.as_slice(),
+        };
         let payload = format!(
             "smd+{conid}+{}",
             serde_json::to_string(&body)
@@ -217,6 +252,12 @@ impl WsClient {
                 Message::Text(text) => return Ok(Some(classify(text.as_str()))),
                 Message::Binary(bytes) => {
                     // CPAPI occasionally sends binary frames for heartbeats.
+                    // Convert lossily — invalid UTF-8 becomes U+FFFD, which
+                    // will either parse (empty `{}` survives) or be reported
+                    // as [`WsMessage::Malformed`] with the JSON error. We
+                    // deliberately don't surface a separate "BinaryLost"
+                    // variant: the underlying socket is documented as text
+                    // JSON and any non-UTF-8 payload is upstream weirdness.
                     let s = String::from_utf8_lossy(&bytes).to_string();
                     return Ok(Some(classify(&s)));
                 }
@@ -285,7 +326,7 @@ impl WsClient {
     /// ticker task on top. Chosen to match CPAPI's 5-minute session timeout
     /// with a safety margin.
     #[must_use]
-    pub fn recommended_keepalive() -> Duration {
+    pub const fn recommended_keepalive() -> Duration {
         Duration::from_secs(60)
     }
 }
@@ -321,7 +362,12 @@ fn classify(text: &str) -> WsMessage {
     }
     let value: Value = match serde_json::from_str(text) {
         Ok(v) => v,
-        Err(_) => return WsMessage::Malformed(text.to_owned()),
+        Err(e) => {
+            return WsMessage::Malformed {
+                text: text.to_owned(),
+                error: e.to_string(),
+            }
+        }
     };
 
     let topic = value
@@ -387,6 +433,9 @@ mod tests {
 
     #[test]
     fn classify_malformed_text() {
-        assert!(matches!(classify("not-json"), WsMessage::Malformed(_)));
+        assert!(matches!(
+            classify("not-json"),
+            WsMessage::Malformed { .. }
+        ));
     }
 }

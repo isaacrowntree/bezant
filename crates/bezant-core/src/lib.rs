@@ -50,7 +50,9 @@ pub mod ws;
 pub use auth::{AuthStatus, KeepaliveHandle, TickleResponse};
 pub use client::{Client, ClientBuilder, DEFAULT_BASE_URL};
 pub use error::{Error, Result};
-pub use helpers::{ContractSummary, Position, SymbolCache};
+pub use helpers::{
+    ContractSummary, Position, SymbolCache, MAX_POSITION_PAGES, POSITIONS_PAGE_SIZE,
+};
 pub use ws::{MarketDataFields, WsClient, WsMessage};
 
 /// Re-export of the auto-generated API crate for callers that want raw access.
