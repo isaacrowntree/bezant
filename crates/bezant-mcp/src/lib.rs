@@ -3,7 +3,7 @@
 //! exercise the tools via an in-memory MCP transport without shelling out
 //! to the built binary.
 
-#![allow(missing_docs)]
+#![warn(missing_docs)]
 
 use std::sync::Arc;
 
@@ -14,10 +14,18 @@ use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData as McpError, Ser
 use serde::Deserialize;
 use serde_json::Value;
 
+/// MCP server exposing the Bezant IBKR client as tools.
+///
+/// Built by [`BezantMcp::new`] around a prepared [`bezant::Client`] and a
+/// shared [`bezant::SymbolCache`]. Implements [`rmcp::ServerHandler`] so
+/// it plugs straight into rmcp's stdio / streamable transports.
 #[derive(Clone)]
 pub struct BezantMcp {
+    /// Typed Bezant client used to call CPAPI endpoints.
     pub client: bezant::Client,
+    /// Shared ticker → conid cache reused across tool invocations.
     pub cache: Arc<bezant::SymbolCache>,
+    /// Auto-generated tool router produced by [`rmcp::tool_router`].
     pub tool_router: ToolRouter<BezantMcp>,
 }
 
@@ -34,12 +42,14 @@ impl BezantMcp {
 
 // ---------- Tool argument types ----------
 
+/// Args for tools scoped to a single IBKR account.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AccountIdArgs {
     /// IBKR account identifier (e.g. `DU123456` for paper, `U123456` for live).
     pub account_id: String,
 }
 
+/// Args for tools that look up data by ticker symbol.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SymbolArgs {
     /// Ticker symbol, e.g. `AAPL`, `BRK B`, `GLD`.
