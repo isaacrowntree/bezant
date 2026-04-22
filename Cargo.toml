@@ -34,9 +34,12 @@ strip = true
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
-rust_2018_idioms = "warn"
 unreachable_pub = "warn"
+# Lint groups must sit at a lower priority than specific lints in the
+# same table so that a crate-level `#![allow(specific_lint)]` can still
+# override them.
+rust_2018_idioms = { level = "warn", priority = -1 }
 
 [workspace.lints.clippy]
-all = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
+all = { level = "warn", priority = -1 }
