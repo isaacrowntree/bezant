@@ -79,12 +79,9 @@ impl Client {
             return Err(Error::NotAuthenticated);
         }
         if !status.is_success() {
-            return Err(Error::other(format!(
-                "auth_status returned {status}"
-            )));
+            return Err(Error::other(format!("auth_status returned {status}")));
         }
-        let parsed: bezant_api::BrokerageSessionStatus =
-            resp.json().await.map_err(Error::Http)?;
+        let parsed: bezant_api::BrokerageSessionStatus = resp.json().await.map_err(Error::Http)?;
         Ok(AuthStatus::from(parsed))
     }
 
