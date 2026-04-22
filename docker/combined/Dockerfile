@@ -11,7 +11,7 @@
 # standalone images in ../cpapi-gateway/ and the repo-root Dockerfile.
 
 # ---- build bezant-server ----------------------------------------------------
-FROM rust:1.82-bookworm AS rust-build
+FROM rust:1.89-bookworm AS rust-build
 WORKDIR /work
 COPY . .
 RUN cargo build --release -p bezant-server

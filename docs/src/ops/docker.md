@@ -14,7 +14,7 @@ Then:
 
 ## What the image contains
 
-- `Dockerfile` builds the Rust workspace with `rust:1.82-bookworm`.
+- `Dockerfile` builds the Rust workspace with `rust:1.89-bookworm`.
 - Final runtime image is `gcr.io/distroless/cc-debian12:nonroot` — about
   20 MB, no shell, no package manager, minimal attack surface.
 - Only the `bezant-server` binary is copied in. No IBKR Gateway inside the

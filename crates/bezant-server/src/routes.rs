@@ -26,7 +26,6 @@ use crate::state::AppState;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/debug/jar", get(debug_jar))
         .route("/accounts", get(accounts))
         .route("/accounts/{account_id}/summary", get(account_summary))
         .route("/accounts/{account_id}/positions", get(account_positions))
@@ -160,40 +159,6 @@ struct HealthBody {
     connected: bool,
     competing: bool,
     message: Option<String>,
-}
-
-async fn debug_jar(State(state): State<AppState>) -> Json<serde_json::Value> {
-    use reqwest::cookie::CookieStore;
-    let jar = state.client().cookie_jar();
-    let base = state.client().base_url();
-    let gw_root: reqwest::Url = base
-        .as_str()
-        .trim_end_matches("/v1/api")
-        .trim_end_matches('/')
-        .parse()
-        .unwrap();
-    let iserver: reqwest::Url = format!("{}/v1/api/iserver/auth/status", gw_root)
-        .parse()
-        .unwrap();
-    let sso_login: reqwest::Url = format!("{}/sso/Login", gw_root).parse().unwrap();
-    let root_cookies = jar
-        .cookies(&gw_root)
-        .map(|v| v.to_str().unwrap_or("").to_owned())
-        .unwrap_or_default();
-    let iserver_cookies = jar
-        .cookies(&iserver)
-        .map(|v| v.to_str().unwrap_or("").to_owned())
-        .unwrap_or_default();
-    let sso_cookies = jar
-        .cookies(&sso_login)
-        .map(|v| v.to_str().unwrap_or("").to_owned())
-        .unwrap_or_default();
-    Json(serde_json::json!({
-        "gateway_root": gw_root.as_str(),
-        "cookies_for_root": root_cookies,
-        "cookies_for_iserver_auth_status": iserver_cookies,
-        "cookies_for_sso_login": sso_cookies,
-    }))
 }
 
 async fn health(State(state): State<AppState>) -> Result<Json<HealthBody>, AppError> {
@@ -440,7 +405,5 @@ async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
         }
     }
 
-    let mut response = (status, headers, bytes).into_response();
-    *response.status_mut() = status;
-    Ok(response)
+    Ok((status, headers, bytes).into_response())
 }

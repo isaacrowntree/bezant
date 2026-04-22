@@ -6,7 +6,7 @@
 # tree size.
 
 # ---- build ------------------------------------------------------------------
-FROM rust:1.82-bookworm AS build
+FROM rust:1.89-bookworm AS build
 
 WORKDIR /work
 COPY . .
