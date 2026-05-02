@@ -17,6 +17,7 @@
 //! practice) would lose granularity — fine for our use case.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Mutex;
 
 use reqwest::cookie::CookieStore;
@@ -26,9 +27,40 @@ use url::Url;
 /// Thread-safe, name-keyed cookie store. `set_cookies` parses each
 /// `Set-Cookie` value and stores `(name → value)` ignoring everything
 /// after the first `;` (attributes like `Path`, `HttpOnly`, `Secure`).
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct NameKeyedJar {
+    // Held only across sub-microsecond `HashMap` ops; never across
+    // `.await`. `std::sync::Mutex` is the right choice here —
+    // `tokio::sync::Mutex` would force `.await` and offer no benefit.
     inner: Mutex<HashMap<String, String>>,
+}
+
+impl fmt::Debug for NameKeyedJar {
+    /// Print the cookie *names* and the entry count, never the values.
+    /// Cookie values frequently carry secrets (JSESSIONID, OAuth
+    /// tokens) and a derived `Debug` would leak them through every
+    /// `tracing::debug!(?jar)` call site.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut names: Vec<&str> = guard.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        f.debug_struct("NameKeyedJar")
+            .field("len", &guard.len())
+            .field("names", &names)
+            .finish()
+    }
+}
+
+/// True when the byte is a CR/LF/NUL or other control char that
+/// `HeaderValue::from_str` would refuse, or a structural character
+/// that would split the cookie pair when serialised. Used to reject
+/// malformed Set-Cookie values before they poison the jar.
+fn is_unsafe_byte(b: u8) -> bool {
+    b < 0x20 || b == 0x7F
+}
+
+fn is_safe(s: &str) -> bool {
+    !s.bytes().any(is_unsafe_byte)
 }
 
 impl NameKeyedJar {
@@ -52,9 +84,18 @@ impl NameKeyedJar {
                 continue;
             }
             if let Some((name, value)) = trimmed.split_once('=') {
-                let name = name.trim().to_owned();
-                let value = value.split(';').next().unwrap_or("").trim().to_owned();
-                guard.insert(name, value);
+                let name = name.trim();
+                let value = value.split(';').next().unwrap_or("").trim();
+                // Reject names/values containing control chars or
+                // delimiter characters that would either be rejected
+                // by `HeaderValue::from_str` later (silently dropping
+                // the whole `Cookie:` header) or break the
+                // `name1=v1; name2=v2` serialisation we emit from
+                // `cookies()`.
+                if name.is_empty() || !is_safe(name) || !is_safe(value) {
+                    continue;
+                }
+                guard.insert(name.to_owned(), value.to_owned());
             }
         }
     }
@@ -100,7 +141,15 @@ impl CookieStore for NameKeyedJar {
                 continue;
             }
             if let Some((name, value)) = primary.split_once('=') {
-                guard.insert(name.trim().to_owned(), value.trim().to_owned());
+                let name = name.trim();
+                let value = value.trim();
+                // Same hardening as `set_pairs` — reject control chars
+                // and empty names so a single malformed Set-Cookie
+                // can't poison subsequent `Cookie:` serialisation.
+                if name.is_empty() || !is_safe(name) || !is_safe(value) {
+                    continue;
+                }
+                guard.insert(name.to_owned(), value.to_owned());
             }
         }
     }
@@ -127,31 +176,26 @@ impl CookieStore for NameKeyedJar {
 mod tests {
     use super::*;
 
-    #[test]
-    fn set_cookies_replaces_by_name() {
-        let jar = NameKeyedJar::new();
-        let url = Url::parse("https://localhost:5000/").unwrap();
-        let h1 = HeaderValue::from_static("JSESSIONID=OLD; Path=/sso; HttpOnly");
-        let h2 = HeaderValue::from_static("JSESSIONID=NEW; Path=/; Secure");
-        jar.set_cookies(&mut [h1].iter(), &url);
-        jar.set_cookies(&mut [h2].iter(), &url);
-        let snapshot = jar.snapshot();
-        assert_eq!(snapshot, vec![("JSESSIONID".into(), "NEW".into())]);
+    fn url() -> Url {
+        Url::parse("https://localhost:5000/").unwrap()
     }
 
     #[test]
-    fn cookies_emits_combined_header_in_stable_order() {
+    fn set_cookies_replaces_by_name() {
         let jar = NameKeyedJar::new();
-        let url = Url::parse("https://localhost:5000/").unwrap();
-        jar.set_pairs(["b=2", "a=1", "c=3"]);
-        let header = jar.cookies(&url).unwrap();
-        // Map iteration order isn't deterministic, but every pair must
-        // be present and use `; ` separation.
-        let s = header.to_str().unwrap();
-        for needle in ["a=1", "b=2", "c=3"] {
-            assert!(s.contains(needle), "expected {needle} in {s:?}");
-        }
-        assert!(s.contains("; "));
+        let h1 = HeaderValue::from_static("JSESSIONID=OLD; Path=/sso; HttpOnly");
+        let h2 = HeaderValue::from_static("JSESSIONID=NEW; Path=/; Secure");
+        jar.set_cookies(&mut [h1].iter(), &url());
+        jar.set_cookies(&mut [h2].iter(), &url());
+        assert_eq!(jar.snapshot(), vec![("JSESSIONID".into(), "NEW".into())]);
+    }
+
+    #[test]
+    fn set_pairs_replaces_by_name() {
+        let jar = NameKeyedJar::new();
+        jar.set_pairs(["X=A"]);
+        jar.set_pairs(["X=B"]);
+        assert_eq!(jar.snapshot(), vec![("X".into(), "B".into())]);
     }
 
     #[test]
@@ -162,9 +206,133 @@ mod tests {
     }
 
     #[test]
+    fn cookies_combines_pairs_with_semicolon_separator() {
+        let jar = NameKeyedJar::new();
+        jar.set_pairs(["b=2", "a=1", "c=3"]);
+        // `HashMap` iteration order isn't stable, so assert presence
+        // + separator instead of full equality.
+        let s = jar.cookies(&url()).unwrap().to_str().unwrap().to_owned();
+        for needle in ["a=1", "b=2", "c=3"] {
+            assert!(s.contains(needle), "expected {needle} in {s:?}");
+        }
+        assert_eq!(s.matches("; ").count(), 2);
+    }
+
+    #[test]
+    fn cookies_single_entry_has_no_trailing_separator() {
+        let jar = NameKeyedJar::new();
+        jar.set_pairs(["only=one"]);
+        let header = jar.cookies(&url()).unwrap();
+        assert_eq!(header.to_str().unwrap(), "only=one");
+    }
+
+    #[test]
     fn empty_jar_returns_none() {
         let jar = NameKeyedJar::new();
-        let url = Url::parse("https://localhost:5000/").unwrap();
-        assert!(jar.cookies(&url).is_none());
+        assert!(jar.cookies(&url()).is_none());
+        assert!(jar.is_empty());
+        assert_eq!(jar.len(), 0);
+    }
+
+    #[test]
+    fn clear_empties_jar() {
+        let jar = NameKeyedJar::new();
+        jar.set_pairs(["a=1", "b=2"]);
+        assert_eq!(jar.len(), 2);
+        jar.clear();
+        assert!(jar.is_empty());
+        assert!(jar.cookies(&url()).is_none());
+    }
+
+    #[test]
+    fn snapshot_returns_sorted_by_name() {
+        let jar = NameKeyedJar::new();
+        jar.set_pairs(["c=3", "a=1", "b=2"]);
+        assert_eq!(
+            jar.snapshot(),
+            vec![
+                ("a".into(), "1".into()),
+                ("b".into(), "2".into()),
+                ("c".into(), "3".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn set_cookies_handles_iterator_of_multiple_values() {
+        let jar = NameKeyedJar::new();
+        let h1 = HeaderValue::from_static("a=1; Path=/");
+        let h2 = HeaderValue::from_static("b=2; HttpOnly");
+        let h3 = HeaderValue::from_static("c=3");
+        let mut iter = [&h1, &h2, &h3].into_iter();
+        jar.set_cookies(&mut iter, &url());
+        assert_eq!(jar.len(), 3);
+    }
+
+    #[test]
+    fn set_cookies_skips_non_ascii_header_values() {
+        let jar = NameKeyedJar::new();
+        // Non-UTF8 byte → `to_str()` fails and we skip silently.
+        let bad = HeaderValue::from_bytes(b"name=\xff").unwrap();
+        let good = HeaderValue::from_static("kept=yes");
+        jar.set_cookies(&mut [&bad, &good].into_iter(), &url());
+        assert_eq!(jar.snapshot(), vec![("kept".into(), "yes".into())]);
+    }
+
+    #[test]
+    fn set_pairs_skips_malformed_inputs() {
+        let jar = NameKeyedJar::new();
+        jar.set_pairs([
+            "",           // empty
+            "   ",        // whitespace only
+            "novalue",    // no `=`
+            "=onlyvalue", // empty name
+            "name=",      // empty value (allowed)
+            "n=a=b",      // value with `=`, kept as-is up to the first `;`
+        ]);
+        let snap = jar.snapshot();
+        // `name=` produces ("name", "") — empty value is legal cookie state.
+        // `n=a=b` produces ("n", "a=b") — split_once stops at first `=`.
+        assert!(snap.contains(&("name".into(), String::new())));
+        assert!(snap.contains(&("n".into(), "a=b".into())));
+        assert_eq!(snap.len(), 2);
+    }
+
+    #[test]
+    fn set_pairs_rejects_crlf_injection_in_value() {
+        let jar = NameKeyedJar::new();
+        // `HeaderValue` validation already blocks CR/LF from
+        // entering via `set_cookies`, but `set_pairs` takes a raw
+        // `&str` from a browser `Cookie:` header. If a future axum
+        // version relaxed `HeaderMap` validation, an embedded `\r\n`
+        // would land in the jar and the next `cookies()` call would
+        // build a `HeaderValue` containing control chars,
+        // `from_str` would error, and the entire `Cookie:` header
+        // would be silently dropped — costing the user their
+        // session. Defence-in-depth: reject at insertion.
+        jar.set_pairs(["X=foo\r\nInjected: yes", "kept=yes"]);
+        assert_eq!(jar.snapshot(), vec![("kept".into(), "yes".into())]);
+        let header = jar.cookies(&url()).unwrap();
+        assert_eq!(header.to_str().unwrap(), "kept=yes");
+    }
+
+    #[test]
+    fn rejects_control_chars_in_name() {
+        let jar = NameKeyedJar::new();
+        jar.set_pairs(["bad\rname=v", "ok=v"]);
+        assert_eq!(jar.snapshot(), vec![("ok".into(), "v".into())]);
+    }
+
+    #[test]
+    fn debug_does_not_leak_cookie_values() {
+        let jar = NameKeyedJar::new();
+        jar.set_pairs(["JSESSIONID=SECRET-VALUE-DO-NOT-LOG"]);
+        let rendered = format!("{jar:?}");
+        assert!(
+            !rendered.contains("SECRET-VALUE"),
+            "Debug must not leak cookie values, got: {rendered}"
+        );
+        assert!(rendered.contains("JSESSIONID"));
+        assert!(rendered.contains("len"));
     }
 }

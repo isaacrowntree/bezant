@@ -841,3 +841,117 @@ async fn passthrough_replays_browser_cookies_into_typed_api() {
     );
     assert_eq!(body["authenticated"], json!(true));
 }
+
+/// Regression: when the upstream sets the same cookie name at two
+/// different paths in successive responses (Gateway's keepalive at
+/// `/v1/api/`, login passthrough at `/sso/`), the OLD `Jar`
+/// accumulated both as separate entries and the next typed call sent
+/// `Cookie: JSESSIONID=A; JSESSIONID=B`, which CPGateway rejected as
+/// a session mismatch. The `NameKeyedJar` keys by name only — the
+/// later value must overwrite the earlier one and only ONE
+/// `JSESSIONID=` token must reach upstream.
+#[tokio::test]
+async fn passthrough_collapses_same_name_set_cookies_to_one_value() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let gateway = MockServer::start().await;
+
+    // First passthrough: Gateway sets `JSESSIONID=ALPHA` at /sso.
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/sso/Login"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("set-cookie", "JSESSIONID=ALPHA; Path=/sso; HttpOnly")
+                .set_body_string("<html></html>"),
+        )
+        .mount(&gateway)
+        .await;
+    // Second passthrough: Gateway sets `JSESSIONID=BETA` at root —
+    // mimics a refresh post-login.
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/v1/api/tickle"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("set-cookie", "JSESSIONID=BETA; Path=/; HttpOnly")
+                .set_body_json(json!({})),
+        )
+        .mount(&gateway)
+        .await;
+
+    // Final typed call asserts the upstream Cookie header carries
+    // exactly one `JSESSIONID=BETA` token (not `ALPHA; BETA`).
+    let cookie_seen: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+    let count = Arc::new(AtomicUsize::new(0));
+    let cookie_for_assert = Arc::clone(&cookie_seen);
+    let count_for_assert = Arc::clone(&count);
+
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/v1/api/iserver/auth/status"))
+        .respond_with(move |req: &wiremock::Request| {
+            let header = req
+                .headers
+                .get("cookie")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned();
+            *cookie_for_assert.lock().unwrap() = Some(header);
+            count_for_assert.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_json(json!({
+                "authenticated": true,
+                "connected": true,
+                "competing": false,
+                "message": ""
+            }))
+        })
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+    // Drive both Set-Cookie responses through the proxy.
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/sso/Login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/api/tickle")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Trigger a typed auth_status — wiremock will record the Cookie header.
+    let _ = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let cookie = cookie_seen.lock().unwrap().clone().unwrap_or_default();
+    let jsessionid_count = cookie.match_indices("JSESSIONID=").count();
+    assert_eq!(
+        jsessionid_count, 1,
+        "Cookie header should carry exactly one JSESSIONID; got {cookie:?}"
+    );
+    assert!(
+        cookie.contains("JSESSIONID=BETA"),
+        "Latest Set-Cookie value should win; got {cookie:?}"
+    );
+    assert!(
+        !cookie.contains("ALPHA"),
+        "Earlier value must be replaced, not appended; got {cookie:?}"
+    );
+}
