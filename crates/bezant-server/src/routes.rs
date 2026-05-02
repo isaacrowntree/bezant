@@ -25,6 +25,7 @@ use crate::state::AppState;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/debug/jar", get(debug_jar))
         .route("/accounts", get(accounts))
         .route("/accounts/{account_id}/summary", get(account_summary))
         .route("/accounts/{account_id}/positions", get(account_positions))
@@ -135,14 +136,19 @@ async fn passthrough_any(
         // one per cookie pair.
         jar.set_cookies(&mut batch.iter(), &target_url);
     }
-    // DEBUG, not INFO: this fires on every browser request that carries
-    // cookies (every static asset on /sso/* ⇒ ~10 events per page load),
-    // which is too noisy for a production log shipper.
-    tracing::debug!(
-        path = %path_only,
-        cookies = injected,
-        "passthrough cookie replay"
-    );
+    // INFO during the Railway-deploy diagnostic phase so we can
+    // see browser ↔ jar interaction in the deploy log without
+    // reaching for a debug endpoint. Demote back to DEBUG once the
+    // session-bridging story is settled.
+    if injected > 0 {
+        tracing::info!(
+            path = %path_only,
+            cookies = injected,
+            "passthrough cookie replay"
+        );
+    } else {
+        tracing::debug!(path = %path_only, "passthrough no browser cookies");
+    }
 
     let body_bytes = axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024)
         .await
@@ -227,6 +233,32 @@ struct HealthBody {
     connected: bool,
     competing: bool,
     message: Option<String>,
+}
+
+/// Diagnostic-only endpoint: dumps what reqwest's jar would attach for
+/// a few representative URLs. Useful when chasing "browser is logged in
+/// but typed /health says not_authenticated" issues. Intentionally not
+/// in the public docs; remove once we trust the cookie pipeline.
+async fn debug_jar(State(state): State<AppState>) -> Json<serde_json::Value> {
+    use reqwest::cookie::CookieStore;
+    let jar = state.client().cookie_jar();
+    let root = state.client().gateway_root_url().clone();
+    let probe = |suffix: &str| -> String {
+        match root.join(suffix) {
+            Ok(u) => jar
+                .cookies(&u)
+                .map(|v| v.to_str().unwrap_or("").to_owned())
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        }
+    };
+    Json(serde_json::json!({
+        "gateway_root": root.as_str(),
+        "cookies_at_root": probe(""),
+        "cookies_at_sso_login": probe("sso/Login"),
+        "cookies_at_iserver_auth_status": probe("v1/api/iserver/auth/status"),
+        "cookies_at_portfolio_accounts": probe("v1/api/portfolio/accounts"),
+    }))
 }
 
 async fn health(State(state): State<AppState>) -> Result<Json<HealthBody>, AppError> {
