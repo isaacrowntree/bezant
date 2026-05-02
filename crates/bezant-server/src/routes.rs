@@ -77,7 +77,6 @@ async fn passthrough_any(
     req: axum::extract::Request,
 ) -> Result<Response<Body>, AppError> {
     use axum::http::Method;
-    use reqwest::cookie::CookieStore;
     let method = req.method().clone();
     let path_and_query = req
         .uri()
@@ -103,38 +102,33 @@ async fn passthrough_any(
 
     // Replay any cookies the browser sent into the shared jar so typed
     // API calls (`/health`, `/accounts`, …) see the same session that
-    // the interactive login established. We use `Path=/` so reqwest
-    // attaches the cookie to every CPAPI sub-path the typed client hits
-    // (a cookie originally scoped to `/sso` would otherwise never reach
-    // `/v1/api/iserver/*`). Re-setting a cookie with the same
-    // (domain, path, name) replaces the previous value, so the jar
-    // doesn't grow monotonically as the browser rotates session ids.
+    // the interactive login established.
     //
-    // **Trust model:** bezant-server is single-tenant — the shared jar
+    // The jar (`bezant::NameKeyedJar`) keys cookies purely by name, so
+    // inserting `JSESSIONID=NEW` always replaces `JSESSIONID=OLD` —
+    // duplicates can't accumulate even if the Gateway sets the same
+    // cookie at different paths in different responses. CPGateway
+    // rejects requests that arrive with two values for the same cookie
+    // name, so this single-source-of-truth model is required.
+    //
+    // **Trust model:** bezant-server is single-tenant. The shared jar
     // is intentionally visible to *all* server-side typed callers.
     // Don't deploy this proxy multi-tenant.
     let jar = state.client().cookie_jar();
-    let mut injected = 0usize;
-    let mut batch: Vec<reqwest::header::HeaderValue> = Vec::new();
+    let mut pairs: Vec<&str> = Vec::new();
     for cookie_header in headers.get_all(axum::http::header::COOKIE) {
         if let Ok(raw) = cookie_header.to_str() {
             for pair in raw.split(';') {
-                let pair = pair.trim();
-                if pair.is_empty() {
-                    continue;
-                }
-                let set_cookie = format!("{pair}; Path=/");
-                if let Ok(hv) = reqwest::header::HeaderValue::from_str(&set_cookie) {
-                    batch.push(hv);
-                    injected += 1;
+                let trimmed = pair.trim();
+                if !trimmed.is_empty() {
+                    pairs.push(trimmed);
                 }
             }
         }
     }
-    if !batch.is_empty() {
-        // One write-lock acquisition for the whole batch instead of
-        // one per cookie pair.
-        jar.set_cookies(&mut batch.iter(), &target_url);
+    let injected = pairs.len();
+    if injected > 0 {
+        jar.set_pairs(&pairs);
     }
     // INFO during the Railway-deploy diagnostic phase so we can
     // see browser ↔ jar interaction in the deploy log without
@@ -235,29 +229,22 @@ struct HealthBody {
     message: Option<String>,
 }
 
-/// Diagnostic-only endpoint: dumps what reqwest's jar would attach for
-/// a few representative URLs. Useful when chasing "browser is logged in
-/// but typed /health says not_authenticated" issues. Intentionally not
-/// in the public docs; remove once we trust the cookie pipeline.
+/// Diagnostic-only endpoint: dumps the entire shared cookie jar (one
+/// `(name, value)` pair per entry, sorted by name). Useful when chasing
+/// "browser is logged in but typed /health says not_authenticated"
+/// issues. Intentionally not in the public docs; remove once we trust
+/// the cookie pipeline.
 async fn debug_jar(State(state): State<AppState>) -> Json<serde_json::Value> {
-    use reqwest::cookie::CookieStore;
     let jar = state.client().cookie_jar();
-    let root = state.client().gateway_root_url().clone();
-    let probe = |suffix: &str| -> String {
-        match root.join(suffix) {
-            Ok(u) => jar
-                .cookies(&u)
-                .map(|v| v.to_str().unwrap_or("").to_owned())
-                .unwrap_or_default(),
-            Err(_) => String::new(),
-        }
-    };
+    let entries: Vec<serde_json::Value> = jar
+        .snapshot()
+        .into_iter()
+        .map(|(name, value)| serde_json::json!({ "name": name, "value": value }))
+        .collect();
     Json(serde_json::json!({
-        "gateway_root": root.as_str(),
-        "cookies_at_root": probe(""),
-        "cookies_at_sso_login": probe("sso/Login"),
-        "cookies_at_iserver_auth_status": probe("v1/api/iserver/auth/status"),
-        "cookies_at_portfolio_accounts": probe("v1/api/portfolio/accounts"),
+        "gateway_root": state.client().gateway_root_url().as_str(),
+        "size": entries.len(),
+        "entries": entries,
     }))
 }
 

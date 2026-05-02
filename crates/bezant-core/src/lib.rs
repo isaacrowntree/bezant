@@ -45,6 +45,7 @@ mod auth;
 mod client;
 mod error;
 mod helpers;
+mod jar;
 pub mod ws;
 
 pub use auth::{AuthStatus, KeepaliveHandle, TickleResponse};
@@ -53,6 +54,7 @@ pub use error::{Error, Result};
 pub use helpers::{
     ContractSummary, Position, SymbolCache, MAX_POSITION_PAGES, POSITIONS_PAGE_SIZE,
 };
+pub use jar::NameKeyedJar;
 pub use ws::{MarketDataFields, WsClient, WsMessage};
 
 /// Re-export of the auto-generated API crate for callers that want raw access.

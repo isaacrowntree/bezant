@@ -4,10 +4,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::cookie::Jar;
 use tracing::warn;
 
 use crate::error::{Error, Result};
+use crate::jar::NameKeyedJar;
 
 /// Default base URL of the Client Portal Gateway when run locally via the
 /// bundled Docker image.
@@ -38,7 +38,7 @@ struct ClientInner {
     http: reqwest::Client,
     base_url: url::Url,
     gateway_root: url::Url,
-    cookie_jar: Arc<Jar>,
+    cookie_jar: Arc<NameKeyedJar>,
 }
 
 impl Client {
@@ -95,8 +95,14 @@ impl Client {
     /// (for example bezant-server's `/sso/Login` passthrough): you can
     /// inject cookies that arrive from the proxied caller so that typed
     /// API calls made through the same `Client` see the same session.
+    ///
+    /// The underlying [`NameKeyedJar`] keys cookies purely by name —
+    /// inserting `JSESSIONID=NEW` overwrites `JSESSIONID=OLD`
+    /// regardless of the path either was originally set on. This trades
+    /// RFC 6265 path/domain semantics for "the Gateway never sees two
+    /// values for the same cookie name", which CPGateway requires.
     #[must_use]
-    pub fn cookie_jar(&self) -> Arc<Jar> {
+    pub fn cookie_jar(&self) -> Arc<NameKeyedJar> {
         Arc::clone(&self.inner.cookie_jar)
     }
 }
@@ -183,7 +189,7 @@ impl ClientBuilder {
         } else {
             reqwest::redirect::Policy::none()
         };
-        let cookie_jar = Arc::new(Jar::default());
+        let cookie_jar = Arc::new(NameKeyedJar::new());
         let mut http_builder = reqwest::Client::builder()
             .cookie_provider(Arc::clone(&cookie_jar))
             .danger_accept_invalid_certs(self.accept_invalid_certs)
