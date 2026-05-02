@@ -955,3 +955,261 @@ async fn passthrough_collapses_same_name_set_cookies_to_one_value() {
         "Earlier value must be replaced, not appended; got {cookie:?}"
     );
 }
+
+// ----- /debug/probe -----------------------------------------------------------
+//
+// The probe walks `auth/status` → `ssodh/init` → `tickle` →
+// `portfolio/accounts` and pins each step's result. These tests cover
+// the four verdicts the handler can emit: `ok`, `needs_login`,
+// `ssodh_failed` (the Railway-failure-mode hypothesis), and
+// `accounts_failed`.
+
+async fn probe_body(app: axum::Router) -> Value {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/debug/probe")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, body) = response_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "probe must return 200");
+    body
+}
+
+fn authed_status_builder() -> wiremock::MockBuilder {
+    Mock::given(wm_method("POST")).and(wm_path("/v1/api/iserver/auth/status"))
+}
+
+fn authed_status_response() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "authenticated": true,
+        "connected": true,
+        "competing": false,
+        "message": "ready"
+    }))
+}
+
+#[tokio::test]
+async fn probe_happy_path_returns_ok_verdict() {
+    let gateway = MockServer::start().await;
+    authed_status_builder().respond_with(authed_status_response()).mount(&gateway).await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/v1/api/iserver/auth/ssodh/init"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "authenticated": true,
+            "connected": true
+        })))
+        .mount(&gateway)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/v1/api/tickle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "session": "sess-123"
+        })))
+        .mount(&gateway)
+        .await;
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/v1/api/portfolio/accounts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "DU123456"}
+        ])))
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+    let body = probe_body(app).await;
+
+    assert_eq!(body["verdict"], json!("ok"));
+    let steps = body["steps"].as_array().expect("steps array");
+    assert_eq!(steps.len(), 4);
+    assert_eq!(steps[0]["name"], json!("auth_status"));
+    assert_eq!(steps[0]["status"], json!(200));
+    assert_eq!(steps[1]["name"], json!("ssodh_init"));
+    assert_eq!(steps[1]["status"], json!(200));
+    assert_eq!(steps[2]["name"], json!("tickle"));
+    assert_eq!(steps[2]["status"], json!(200));
+    assert_eq!(steps[3]["name"], json!("accounts"));
+    assert_eq!(steps[3]["status"], json!(200));
+    // Each step records latency in millis as a number.
+    for step in steps {
+        assert!(
+            step["latency_ms"].is_u64(),
+            "latency_ms must be a number, got {step}"
+        );
+        assert!(step["error"].is_null(), "happy-path error must be null");
+    }
+}
+
+#[tokio::test]
+async fn probe_unauthenticated_session_pins_needs_login() {
+    let gateway = MockServer::start().await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/v1/api/iserver/auth/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "authenticated": false,
+            "connected": true,
+            "competing": false,
+            "message": ""
+        })))
+        .mount(&gateway)
+        .await;
+    // The remaining steps are still mounted so the probe runs end-to-end —
+    // we want to confirm verdict reflects auth_status, not a downstream 404.
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/v1/api/iserver/auth/ssodh/init"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&gateway)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/v1/api/tickle"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&gateway)
+        .await;
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/v1/api/portfolio/accounts"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+    let body = probe_body(app).await;
+
+    assert_eq!(body["verdict"], json!("needs_login"));
+    let steps = body["steps"].as_array().unwrap();
+    // auth_status itself succeeded transport-wise; the verdict comes
+    // from the parsed body, not the HTTP status.
+    assert_eq!(steps[0]["status"], json!(200));
+}
+
+/// Regression-style: this is the Railway-failure-mode signature we
+/// built the probe to detect. `auth_status` says authenticated, but
+/// CPGateway's internal SSO→CPAPI bridge call to `api.ibkr.com` is
+/// rejected → `ssodh/init` returns 401. The probe must pin the
+/// verdict to that exact step so a remote operator can read the
+/// `/debug/probe` body and instantly know the failure is upstream of
+/// bezant-server's proxy layer.
+#[tokio::test]
+async fn probe_ssodh_failure_pins_ssodh_failed_verdict() {
+    let gateway = MockServer::start().await;
+    authed_status_builder().respond_with(authed_status_response()).mount(&gateway).await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/v1/api/iserver/auth/ssodh/init"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("unauthorized"))
+        .mount(&gateway)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/v1/api/tickle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&gateway)
+        .await;
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/v1/api/portfolio/accounts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+    let body = probe_body(app).await;
+
+    assert_eq!(body["verdict"], json!("ssodh_failed"));
+    let steps = body["steps"].as_array().unwrap();
+    assert_eq!(steps[1]["name"], json!("ssodh_init"));
+    assert_eq!(steps[1]["status"], json!(401));
+    // Body preview should carry the upstream message verbatim so a human
+    // reader can tell *what* upstream said, not just that it failed.
+    assert!(
+        steps[1]["body_preview"]
+            .as_str()
+            .unwrap_or("")
+            .contains("unauthorized"),
+        "body_preview should include upstream's response: {step}",
+        step = steps[1]
+    );
+}
+
+#[tokio::test]
+async fn probe_accounts_failure_pins_accounts_failed_verdict() {
+    let gateway = MockServer::start().await;
+    authed_status_builder().respond_with(authed_status_response()).mount(&gateway).await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/v1/api/iserver/auth/ssodh/init"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&gateway)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/v1/api/tickle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&gateway)
+        .await;
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/v1/api/portfolio/accounts"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+    let body = probe_body(app).await;
+
+    assert_eq!(body["verdict"], json!("accounts_failed"));
+    assert_eq!(body["steps"][3]["status"], json!(503));
+}
+
+/// `Origin` header pinning is part of the proxy's CSRF-bypass logic,
+/// so the probe — which exercises the same upstream surface — must
+/// carry it too. Otherwise a pass on `/debug/probe` wouldn't predict a
+/// pass on `/v1/api/*` proxy calls.
+#[tokio::test]
+async fn probe_pins_origin_to_gateway_root() {
+    use std::sync::{Arc, Mutex};
+
+    let gateway = MockServer::start().await;
+    let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let captured_clone = Arc::clone(&captured);
+
+    authed_status_builder()
+        .respond_with(move |req: &wiremock::Request| {
+            let origin = req
+                .headers
+                .get("origin")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned();
+            *captured_clone.lock().unwrap() = Some(origin);
+            ResponseTemplate::new(200).set_body_json(json!({
+                "authenticated": true,
+                "connected": true,
+                "competing": false
+            }))
+        })
+        .mount(&gateway)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/v1/api/iserver/auth/ssodh/init"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&gateway)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/v1/api/tickle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&gateway)
+        .await;
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/v1/api/portfolio/accounts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+    let _ = probe_body(app).await;
+
+    let origin = captured.lock().unwrap().clone().unwrap_or_default();
+    let expected = gateway.uri();
+    assert_eq!(
+        origin,
+        expected.trim_end_matches('/'),
+        "probe must pin Origin to the Gateway's own root"
+    );
+}

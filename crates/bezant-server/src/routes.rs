@@ -26,6 +26,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/debug/jar", get(debug_jar))
+        .route("/debug/probe", get(debug_probe))
         .route("/accounts", get(accounts))
         .route("/accounts/{account_id}/summary", get(account_summary))
         .route("/accounts/{account_id}/positions", get(account_positions))
@@ -246,6 +247,220 @@ async fn debug_jar(State(state): State<AppState>) -> Json<serde_json::Value> {
         "size": entries.len(),
         "entries": entries,
     }))
+}
+
+/// Diagnostic-only endpoint: walks the post-login CPAPI sequence
+/// (`auth/status` → `ssodh/init` → `tickle` → `portfolio/accounts`)
+/// against the Gateway and reports each step's status, latency, body
+/// preview, and Set-Cookie names — *plus* a top-level `verdict` that
+/// pins down which step diverges from the happy path.
+///
+/// Built to discriminate between proxy-layer regressions and upstream
+/// failures (e.g. CPGateway's internal SSODH bridge to `api.ibkr.com`
+/// being rejected from a datacenter egress IP). The probe never aborts
+/// on a step failure — it runs all four so the full picture is in
+/// the response body.
+///
+/// Response shape:
+/// ```json
+/// {
+///   "gateway_root": "https://localhost:5000/",
+///   "elapsed_ms": 412,
+///   "jar_size_before": 7,
+///   "jar_size_after": 7,
+///   "verdict": "ok",
+///   "steps": [{ "name": "auth_status", "status": 200, ... }, ...]
+/// }
+/// ```
+///
+/// Always returns 200 with the diagnostic body — diagnostic failures
+/// surface in the body, not the HTTP status.
+async fn debug_probe(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let client = state.client();
+    let started = std::time::Instant::now();
+    let jar_before = client.cookie_jar().snapshot().len();
+
+    let auth_status = probe_step(
+        client,
+        "auth_status",
+        reqwest::Method::POST,
+        &["iserver", "auth", "status"],
+        None,
+    )
+    .await;
+    let ssodh_init = probe_step(
+        client,
+        "ssodh_init",
+        reqwest::Method::POST,
+        &["iserver", "auth", "ssodh", "init"],
+        Some(serde_json::json!({ "publish": true, "compete": true })),
+    )
+    .await;
+    let tickle = probe_step(
+        client,
+        "tickle",
+        reqwest::Method::POST,
+        &["tickle"],
+        None,
+    )
+    .await;
+    let accounts = probe_step(
+        client,
+        "accounts",
+        reqwest::Method::GET,
+        &["portfolio", "accounts"],
+        None,
+    )
+    .await;
+
+    let verdict = compute_verdict(&auth_status, &ssodh_init, &tickle, &accounts);
+    let jar_after = client.cookie_jar().snapshot().len();
+
+    Json(serde_json::json!({
+        "gateway_root": client.gateway_root_url().as_str(),
+        "elapsed_ms": started.elapsed().as_millis() as u64,
+        "jar_size_before": jar_before,
+        "jar_size_after": jar_after,
+        "verdict": verdict,
+        "steps": [auth_status, ssodh_init, tickle, accounts],
+    }))
+}
+
+/// One step in the diagnostic probe.
+///
+/// Builds the request the same way the real proxy / typed client does:
+/// pins `Content-Length` (Akamai 411 workaround), rewrites `Origin` and
+/// `Referer` to the Gateway's own origin (CPAPI CSRF guard), and
+/// captures the response without touching the shared cookie jar's
+/// happy-path semantics — every Set-Cookie still flows back into the
+/// jar via reqwest's cookie provider.
+async fn probe_step(
+    client: &bezant::Client,
+    name: &'static str,
+    method: reqwest::Method,
+    path_segments: &[&str],
+    body: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut url = client.base_url().clone();
+    if let Ok(mut segs) = url.path_segments_mut() {
+        for seg in path_segments {
+            segs.push(seg);
+        }
+    }
+    let path_for_log = url.path().to_owned();
+
+    let gateway_origin = client
+        .gateway_root_url()
+        .as_str()
+        .trim_end_matches('/')
+        .to_owned();
+
+    let mut builder = client
+        .http()
+        .request(method.clone(), url.clone())
+        .header(reqwest::header::ORIGIN, &gateway_origin)
+        .header(reqwest::header::REFERER, format!("{gateway_origin}/"));
+
+    let body_bytes: Vec<u8> = match (&method, body) {
+        (m, _) if m == reqwest::Method::GET || m == reqwest::Method::HEAD => Vec::new(),
+        (_, Some(json)) => serde_json::to_vec(&json).unwrap_or_default(),
+        (_, None) => Vec::new(),
+    };
+    if method != reqwest::Method::GET && method != reqwest::Method::HEAD {
+        builder = builder
+            .header(reqwest::header::CONTENT_LENGTH, body_bytes.len().to_string())
+            .body(body_bytes.clone());
+        if !body_bytes.is_empty() {
+            builder = builder.header(reqwest::header::CONTENT_TYPE, "application/json");
+        }
+    }
+
+    let started = std::time::Instant::now();
+    let result = builder.send().await;
+    let latency_ms = started.elapsed().as_millis() as u64;
+
+    match result {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let set_cookie_names: Vec<String> = resp
+                .headers()
+                .get_all(reqwest::header::SET_COOKIE)
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .map(|raw| {
+                    raw.split(';')
+                        .next()
+                        .and_then(|s| s.split('=').next())
+                        .map(|s| s.trim().to_owned())
+                        .unwrap_or_default()
+                })
+                .filter(|s| !s.is_empty())
+                .collect();
+            let bytes = resp.bytes().await.unwrap_or_default();
+            let preview_len = bytes.len().min(512);
+            let body_preview = String::from_utf8_lossy(&bytes[..preview_len]).into_owned();
+            serde_json::json!({
+                "name": name,
+                "method": method.as_str(),
+                "path": path_for_log,
+                "status": status,
+                "latency_ms": latency_ms,
+                "body_bytes": bytes.len(),
+                "body_preview": body_preview,
+                "set_cookie_names": set_cookie_names,
+                "error": serde_json::Value::Null,
+            })
+        }
+        Err(e) => serde_json::json!({
+            "name": name,
+            "method": method.as_str(),
+            "path": path_for_log,
+            "status": serde_json::Value::Null,
+            "latency_ms": latency_ms,
+            "body_bytes": 0,
+            "body_preview": "",
+            "set_cookie_names": [],
+            "error": e.to_string(),
+        }),
+    }
+}
+
+/// Pin the failure to the first diverging step.
+///
+/// `auth_status` carries an extra parse: a 200 with `authenticated:false`
+/// is a "needs_login" situation, not a transport success. Subsequent
+/// steps are pure HTTP-status checks — any non-2xx pins the verdict to
+/// that step's name.
+fn compute_verdict(
+    auth_status: &serde_json::Value,
+    ssodh_init: &serde_json::Value,
+    tickle: &serde_json::Value,
+    accounts: &serde_json::Value,
+) -> &'static str {
+    if !is_2xx(auth_status) {
+        return "auth_status_failed";
+    }
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(
+        auth_status["body_preview"].as_str().unwrap_or(""),
+    ) {
+        if parsed["authenticated"] != serde_json::Value::Bool(true) {
+            return "needs_login";
+        }
+    }
+    if !is_2xx(ssodh_init) {
+        return "ssodh_failed";
+    }
+    if !is_2xx(tickle) {
+        return "tickle_failed";
+    }
+    if !is_2xx(accounts) {
+        return "accounts_failed";
+    }
+    "ok"
+}
+
+fn is_2xx(step: &serde_json::Value) -> bool {
+    matches!(step["status"].as_u64(), Some(200..=299))
 }
 
 async fn health(State(state): State<AppState>) -> Result<Json<HealthBody>, AppError> {
