@@ -17,6 +17,27 @@ You will still need to log in to the Gateway once via a VNC / RDP tunnel
 to complete the initial IBKR 2FA. The Gateway keeps the session alive
 after that; Bezant keeps it tickled.
 
+### Combined-image deploy (single Railway service)
+
+The `ghcr.io/isaacrowntree/bezant-combined` image runs CPGateway and
+`bezant-server` together behind one entrypoint, which is what most
+single-user deployments want. Two **mandatory** env vars when you run
+this image behind a public hostname that differs from `localhost:5000`:
+
+| Env var | Required | What it does |
+|---|---|---|
+| `IBKR_GATEWAY_URL` | yes | Always `https://127.0.0.1:5000/v1/api` for the combined image — bezant-server talks to the in-container Gateway. |
+| `PORTAL_BASE_URL` | **yes when public hostname ≠ localhost** | The full origin (`https://your-host.up.railway.app`) the *browser* will see. The entrypoint substitutes this into CPGateway's `conf.yaml` at boot. |
+
+> **Why it matters.** CPGateway's CPAPI handlers refuse post-login
+> requests with HTTP 401 when the browser-supplied `Origin`/`Referer`
+> don't match the `portalBaseURL` it was configured with. The default
+> empty value works for `localhost`-to-`localhost`, but breaks the
+> moment a reverse proxy puts you on a different hostname (Railway,
+> fly.io, ngrok, …). On Railway the entrypoint will fall back to
+> `https://${RAILWAY_PUBLIC_DOMAIN}` automatically; on other platforms
+> set `PORTAL_BASE_URL` explicitly.
+
 ## Why pass-through
 
 `bezant-server`'s handlers forward the Gateway's JSON body verbatim —
