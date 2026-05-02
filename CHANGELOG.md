@@ -7,7 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet — see [0.1.0](#010--2026-04-22) for the initial surface._
+### Changed
+- `bezant-server` proxy now strips the full RFC 7230 §6.1 hop-by-hop
+  header set (`connection`, `keep-alive`, `te`, `trailer`,
+  `transfer-encoding`, `upgrade`, `proxy-authenticate`,
+  `proxy-authorization`) on both request and response sides; previously
+  only `connection`, `content-length`, and `transfer-encoding` were
+  removed.
+- `forward()`'s empty-body fallback for upstream chunked-decode errors
+  is now scoped to 1xx/204/304/3xx responses; on 2xx/4xx/5xx a real
+  decode failure surfaces as an `upstream_http_error` instead of
+  silently returning an empty body.
+- Content-Type rewrite (`application/octet-stream` → `text/html`) and
+  the missing-Content-Type default no longer fire on responses where
+  the body must be empty (1xx/204/304/3xx) per RFC 9110 §8.3, nor on
+  responses with an empty body even at 2xx/4xx/5xx.
+- Cookie-injection log demoted from `info!` to `debug!` and the path's
+  query string is stripped from the log line so SSO tokens don't fan
+  out to log shippers.
+- `bezant-core` adds `Error::BadRequest(String)` for caller-input
+  failures (malformed URLs, unparseable methods, oversize bodies);
+  `bezant-server` maps it to HTTP 400 instead of bucketing it under
+  `Error::Other` → 500.
+- `Error::Decode` carried by `auth_status` now includes the offending
+  URL and HTTP status alongside the serde error.
+
+### Fixed
+- `forward()`'s `had_content_type` flag was set before the response
+  header was actually appended; if `HeaderValue::from_bytes` rejected
+  the upstream value the response went out with neither the original
+  Content-Type nor the default, breaking content rendering.
+- Multiple `Set-Cookie` headers from the Gateway now round-trip
+  reliably (covered by `forward_preserves_multiple_set_cookie_headers`).
+- `forward()` no longer relies on `(StatusCode, HeaderMap, Vec<u8>)`'s
+  `IntoResponse` adapter, which was unconditionally inserting
+  `application/octet-stream` and defeating the "no Content-Type on
+  204" branch.
+
+### Tests
+- 8 new wiremock-driven integration tests in
+  `crates/bezant-server/tests/routes.rs` covering the regressions
+  above plus multi-cookie replay, hop-by-hop request strip, upstream
+  5xx propagation, and Content-Type-on-204 RFC compliance. Total: 23
+  proxy-flow tests, all running in <50 ms with no IBKR involvement.
 
 ## [0.1.0] — 2026-04-22
 

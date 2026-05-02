@@ -50,11 +50,15 @@ impl IntoResponse for AppError {
             bezant::Error::Http(_) => (StatusCode::BAD_GATEWAY, "upstream_http_error"),
             bezant::Error::Api(_) => (StatusCode::BAD_GATEWAY, "upstream_api_error"),
             bezant::Error::Decode(_) => (StatusCode::BAD_GATEWAY, "upstream_decode_error"),
+            bezant::Error::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
             bezant::Error::NotAuthenticated => (StatusCode::UNAUTHORIZED, "not_authenticated"),
             bezant::Error::NoSession => (StatusCode::SERVICE_UNAVAILABLE, "no_session"),
             bezant::Error::Other(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
             // `bezant::Error` is `#[non_exhaustive]` — future-proof the match.
-            _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+            _ => {
+                tracing::error!(error = ?self.0, "unmapped bezant::Error variant");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal")
+            }
         };
         let body = ErrorBody {
             code,

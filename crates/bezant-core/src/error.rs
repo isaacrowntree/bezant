@@ -30,6 +30,12 @@ pub enum Error {
     #[error("response body decode error: {0}")]
     Decode(String),
 
+    /// Caller-provided input was malformed (bad query parameter, oversize
+    /// body, unparseable URL, etc.). Distinct from [`Error::Other`] so
+    /// HTTP wrappers can map it to 400 rather than 500.
+    #[error("bad request: {0}")]
+    BadRequest(String),
+
     /// An error bubbled up from the generated API layer. The inner
     /// boxed error is whatever the generated client raised — this keeps
     /// `bezant-core`'s public API free of a versioned `anyhow` type.

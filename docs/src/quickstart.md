@@ -17,6 +17,16 @@ docker compose up
 Open <https://localhost:5000>, log in with your IBKR credentials + 2FA.
 That's the Gateway. From here, Bezant keeps the session alive automatically.
 
+> **macOS gotcha — port 5000.**
+> macOS Sonoma and later run an **AirPlay Receiver** on `:5000` by default.
+> If your Docker compose comes up but `https://localhost:5000` returns a
+> mysterious `403` with `Server: AirTunes`, that's why. Either:
+> 1. Disable it in *System Settings → General → AirDrop & Handoff →
+>    AirPlay Receiver*, **or**
+> 2. Edit `docker-compose.yml` to remap the host port:
+>    `"5001:5000"` instead of `"5000:5000"`, then open
+>    <https://localhost:5001> instead.
+
 ## Sanity-check via curl
 
 ```sh

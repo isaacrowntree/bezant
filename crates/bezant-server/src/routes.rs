@@ -12,7 +12,6 @@
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
-use axum::response::IntoResponse;
 use axum::routing::{delete, get};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -51,6 +50,27 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Headers we MUST NOT forward through a proxy hop. Subset of RFC 7230 §6.1
+/// extended with `cookie` (so reqwest's shared jar is the single source of
+/// truth) and `host` (so reqwest rebuilds it from the target URL).
+const HOP_BY_HOP: &[&str] = &[
+    "host",
+    "content-length",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "cookie",
+];
+
+fn is_hop_by_hop(name: &str) -> bool {
+    HOP_BY_HOP.iter().any(|h| name.eq_ignore_ascii_case(h))
+}
+
 async fn passthrough_any(
     State(state): State<AppState>,
     req: axum::extract::Request,
@@ -64,6 +84,9 @@ async fn passthrough_any(
         .map(|pq| pq.as_str())
         .unwrap_or("/")
         .to_string();
+    // For logs we keep just the path — query strings frequently carry SSO
+    // tokens / session ids that we don't want fanned out into log shippers.
+    let path_only = req.uri().path().to_string();
 
     // Compose the target URL: Gateway root + the incoming URI. We use
     // the client's own derived root (scheme + host + trailing '/')
@@ -73,19 +96,25 @@ async fn passthrough_any(
     let target = format!("{}{}", gateway_root.trim_end_matches('/'), path_and_query);
     let target_url: reqwest::Url = target
         .parse()
-        .map_err(|e| bezant::Error::other(format!("target url: {e}")))?;
+        .map_err(|e| bezant::Error::BadRequest(format!("target url: {e}")))?;
 
     let headers = req.headers().clone();
 
     // Replay any cookies the browser sent into the shared jar so typed
     // API calls (`/health`, `/accounts`, …) see the same session that
-    // the interactive login established. Each injection overwrites the
-    // existing entry by name, which avoids both (a) monotonic growth of
-    // the jar as the browser rotates cookies and (b) silent scope
-    // broadening when the browser's cookie was originally scoped to
-    // something narrower than `Path=/`.
+    // the interactive login established. We use `Path=/` so reqwest
+    // attaches the cookie to every CPAPI sub-path the typed client hits
+    // (a cookie originally scoped to `/sso` would otherwise never reach
+    // `/v1/api/iserver/*`). Re-setting a cookie with the same
+    // (domain, path, name) replaces the previous value, so the jar
+    // doesn't grow monotonically as the browser rotates session ids.
+    //
+    // **Trust model:** bezant-server is single-tenant — the shared jar
+    // is intentionally visible to *all* server-side typed callers.
+    // Don't deploy this proxy multi-tenant.
     let jar = state.client().cookie_jar();
     let mut injected = 0usize;
+    let mut batch: Vec<reqwest::header::HeaderValue> = Vec::new();
     for cookie_header in headers.get_all(axum::http::header::COOKIE) {
         if let Ok(raw) = cookie_header.to_str() {
             for pair in raw.split(';') {
@@ -93,44 +122,43 @@ async fn passthrough_any(
                 if pair.is_empty() {
                     continue;
                 }
-                // Reqwest's `Jar::set_cookies` keys entries by
-                // (domain, path, name), so re-setting a cookie with
-                // the same name + path (`/`) replaces the previous
-                // value rather than accumulating. `Path=/` matches how
-                // the browser treats its own jar for these paths.
                 let set_cookie = format!("{pair}; Path=/");
                 if let Ok(hv) = reqwest::header::HeaderValue::from_str(&set_cookie) {
-                    jar.set_cookies(&mut std::iter::once(&hv), &target_url);
+                    batch.push(hv);
                     injected += 1;
                 }
             }
         }
     }
-    if injected > 0 {
-        tracing::info!(
-            path = %path_and_query,
-            cookies = injected,
-            "passthrough injected browser cookies into shared jar"
-        );
-    } else {
-        tracing::debug!(path = %path_and_query, "passthrough: no browser cookies");
+    if !batch.is_empty() {
+        // One write-lock acquisition for the whole batch instead of
+        // one per cookie pair.
+        jar.set_cookies(&mut batch.iter(), &target_url);
     }
+    // DEBUG, not INFO: this fires on every browser request that carries
+    // cookies (every static asset on /sso/* ⇒ ~10 events per page load),
+    // which is too noisy for a production log shipper.
+    tracing::debug!(
+        path = %path_only,
+        cookies = injected,
+        "passthrough cookie replay"
+    );
 
     let body_bytes = axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024)
         .await
-        .map_err(|e| bezant::Error::other(format!("read body: {e}")))?;
+        .map_err(|e| bezant::Error::BadRequest(format!("read body: {e}")))?;
 
     let method_reqwest = reqwest::Method::from_bytes(method.as_str().as_bytes())
-        .map_err(|e| bezant::Error::other(format!("method: {e}")))?;
+        .map_err(|e| bezant::Error::BadRequest(format!("method: {e}")))?;
     let mut builder = state.client().http().request(method_reqwest, &target);
     for (name, value) in headers.iter() {
-        // Drop hop-by-hop + host + cookie headers — reqwest rebuilds
-        // the host header and sources cookies from the shared jar.
-        let n = name.as_str().to_ascii_lowercase();
-        if matches!(
-            n.as_str(),
-            "host" | "content-length" | "connection" | "transfer-encoding" | "cookie"
-        ) {
+        // Drop hop-by-hop headers per RFC 7230 §6.1 plus `host`/`cookie`
+        // (reqwest rebuilds the former, the shared jar replaces the
+        // latter). Origin/Referer are *deliberately* forwarded
+        // verbatim: IBKR's 2FA polling validates them as part of its
+        // session check, and any rewrite silently breaks the
+        // `/sso/Authenticator` flow.
+        if is_hop_by_hop(name.as_str()) {
             continue;
         }
         if let Ok(v) = reqwest::header::HeaderValue::from_bytes(value.as_bytes()) {
@@ -375,52 +403,144 @@ async fn passthrough_get(
 
 /// Forward a `reqwest::Response` as an axum response.
 ///
-/// Copies every response header through so that multi-step Gateway flows
-/// (SSO redirects, session cookies, cache headers on static assets)
-/// reach the browser unchanged. Hop-by-hop headers that a new transport
-/// will rebuild — `content-length`, `transfer-encoding`, `connection` —
-/// are dropped. The Gateway issues session cookies with
-/// `Secure; SameSite=None`, so deployments need TLS in front of
-/// bezant-server (a Railway-style HTTPS edge works out of the box).
+/// What we do, header by header:
+/// * **Hop-by-hop** (`content-length`, `transfer-encoding`, `connection`,
+///   `keep-alive`, `te`, `trailer`, `upgrade`, `proxy-authenticate`,
+///   `proxy-authorization`) are dropped — RFC 7230 §6.1.
+/// * **`Set-Cookie`** has any `Domain=` attribute stripped. The Gateway's
+///   upstream (IBKR) sets `Domain=.ibkr.com`, which the browser silently
+///   discards when the response arrives from a different host. Falling
+///   back to a host-only cookie keeps the SSO flow working behind any
+///   hostname; the `Secure`, `HttpOnly`, `SameSite`, and `Path` flags
+///   are preserved.
+/// * **`Content-Type`** is rewritten / defaulted in two cases (skipped
+///   when the body is empty *or* the status is 1xx/204/304):
+///     - upstream sent `application/octet-stream` for what's actually a
+///       text/HTML response (CPGateway does this on `/sso/Dispatcher`),
+///     - upstream sent no Content-Type at all and our `Vec<u8>` body
+///       would default to `application/octet-stream` (which makes
+///       browsers offer to download instead of rendering).
+/// * **Body decode failures** are tolerated *only* on 1xx/204/304/3xx,
+///   where any body is required-or-conventionally empty. On 2xx/4xx/5xx
+///   the decode failure surfaces as a normal upstream-transport error so
+///   real data loss can't slip through silently.
 ///
-/// `Set-Cookie` headers have any `Domain=` attribute stripped before
-/// being emitted to the browser: the Gateway's upstream (IBKR) sets
-/// `Domain=.ibkr.com`, which a browser would immediately discard when
-/// the response arrives from a completely different host. Falling back
-/// to a host-only cookie keeps the flow working behind any hostname.
+/// `Origin` and `Referer` on the *request* side are deliberately
+/// forwarded verbatim — see `passthrough_any`.
 async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
     let status = resp.status();
     let headers_src = resp.headers().clone();
-    let bytes = resp.bytes().await.map_err(bezant::Error::Http)?;
+    let body_must_be_empty =
+        matches!(status.as_u16(), 100..=199 | 204 | 304) || status.is_redirection();
 
+    let bytes: Vec<u8> = match resp.bytes().await {
+        Ok(b) => b.to_vec(),
+        Err(e) if body_must_be_empty => {
+            // Reqwest sometimes errors finalising chunked-encoded
+            // empty bodies on 3xx/204/304; the headers we care about
+            // (Location, Set-Cookie) are already in `headers_src`, so
+            // recover instead of 502-ing the redirect.
+            tracing::debug!(
+                %status,
+                error = %e,
+                "forward: empty-body fallback on no-body status"
+            );
+            Vec::new()
+        }
+        Err(e) => return Err(bezant::Error::Http(e).into()),
+    };
+
+    let body_is_empty = bytes.is_empty();
     let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
 
     let mut headers = HeaderMap::new();
+    let mut had_content_type = false;
     for (name, value) in headers_src.iter() {
         let n = name.as_str().to_ascii_lowercase();
-        if matches!(
-            n.as_str(),
-            "content-length" | "transfer-encoding" | "connection"
-        ) {
+        if is_hop_by_hop_response(&n) {
             continue;
         }
-        let value_bytes: Vec<u8> = if n == "set-cookie" {
-            match value.to_str() {
+        // Set-Cookie may legitimately appear multiple times.
+        if n == "set-cookie" {
+            let value_bytes: Vec<u8> = match value.to_str() {
                 Ok(raw) => strip_cookie_domain(raw).into_bytes(),
                 Err(_) => value.as_bytes().to_vec(),
+            };
+            if let (Ok(name), Ok(value)) = (
+                header::HeaderName::from_bytes(name.as_str().as_bytes()),
+                HeaderValue::from_bytes(&value_bytes),
+            ) {
+                headers.append(name, value);
             }
-        } else {
-            value.as_bytes().to_vec()
-        };
+            continue;
+        }
+        // Content-Type: rewrite octet-stream → text/html only when there
+        // *is* a body and the status normally has one. Use `insert` so
+        // we never accidentally emit two Content-Type headers.
+        if n == "content-type" {
+            let raw = value.to_str().unwrap_or("");
+            let rewrite = !body_is_empty
+                && !body_must_be_empty
+                && raw.eq_ignore_ascii_case("application/octet-stream");
+            let bytes_to_emit: &[u8] = if rewrite {
+                b"text/html; charset=UTF-8"
+            } else {
+                value.as_bytes()
+            };
+            if let (Ok(name), Ok(value)) = (
+                header::HeaderName::from_bytes(name.as_str().as_bytes()),
+                HeaderValue::from_bytes(bytes_to_emit),
+            ) {
+                headers.insert(name, value);
+                had_content_type = true;
+            }
+            continue;
+        }
         if let (Ok(name), Ok(value)) = (
             header::HeaderName::from_bytes(name.as_str().as_bytes()),
-            HeaderValue::from_bytes(&value_bytes),
+            HeaderValue::from_bytes(value.as_bytes()),
         ) {
             headers.append(name, value);
         }
     }
 
-    Ok((status, headers, bytes).into_response())
+    // Default Content-Type to text/html only when we actually have a
+    // body to render. On 1xx/204/304/3xx we leave it absent to comply
+    // with RFC 9110 §8.3.
+    if !had_content_type && !body_is_empty && !body_must_be_empty {
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=UTF-8"),
+        );
+    }
+
+    // Build the response body directly instead of via
+    // `(status, headers, bytes).into_response()`, because the latter
+    // unconditionally inserts `Content-Type: application/octet-stream`
+    // when none is set — which would defeat the explicit "no
+    // Content-Type on 204" branch above.
+    let mut response = Response::builder()
+        .status(status)
+        .body(Body::from(bytes))
+        .map_err(|e| bezant::Error::other(format!("response build: {e}")))?;
+    *response.headers_mut() = headers;
+    Ok(response)
+}
+
+/// Response-side hop-by-hop denylist.
+fn is_hop_by_hop_response(name: &str) -> bool {
+    matches!(
+        name,
+        "content-length"
+            | "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
 }
 
 /// Strip any `Domain=...` attribute from a Set-Cookie value. The browser

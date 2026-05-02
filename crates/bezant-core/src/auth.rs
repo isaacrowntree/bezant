@@ -98,10 +98,12 @@ impl Client {
         if !status.is_success() {
             return Err(Error::other(format!("auth_status returned {status}")));
         }
-        let parsed: bezant_api::BrokerageSessionStatus = resp
-            .json()
-            .await
-            .map_err(|e| Error::Decode(format!("auth_status body: {e}")))?;
+        let parsed: bezant_api::BrokerageSessionStatus = resp.json().await.map_err(|e| {
+            Error::Decode(format!(
+                "auth_status (POST {url}, status {status}): {e}",
+                url = self.base_url(),
+            ))
+        })?;
         Ok(AuthStatus::from(parsed))
     }
 
