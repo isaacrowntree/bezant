@@ -67,10 +67,24 @@ impl Client {
         // body isn't enough if reqwest decides to serialize it with
         // Transfer-Encoding: chunked. Setting the header explicitly
         // forces a `Content-Length: 0` wire representation.
+        //
+        // We also pin Origin/Referer to match the Gateway's own
+        // origin: CPGateway's CPAPI handler treats requests with
+        // missing/mismatched Origin as a CSRF attempt and 401s. Local
+        // browser flows succeed because the browser supplies an
+        // origin that matches the Gateway's expectations; from a
+        // typed server-side caller we need to mint one ourselves.
+        let gateway_origin = self
+            .gateway_root_url()
+            .as_str()
+            .trim_end_matches('/')
+            .to_owned();
         let resp = self
             .http()
-            .post(url)
+            .post(url.clone())
             .header(reqwest::header::CONTENT_LENGTH, "0")
+            .header(reqwest::header::ORIGIN, &gateway_origin)
+            .header(reqwest::header::REFERER, format!("{gateway_origin}/"))
             .send()
             .await
             .map_err(Error::Http)?;
