@@ -667,11 +667,11 @@ fn test_account_constant_matches_fixture() {
 }
 
 /// IBKR's 2FA polling validates the request's `Origin` as part of
-/// its session check, so we must forward whatever the browser sent —
-/// rewriting it (an earlier attempt at fixing CSRF 400s) silently
-/// broke the `/sso/Authenticator` flow. Pin that contract here.
+/// its session check, so on `/sso/*` we forward the browser's Origin
+/// verbatim. An earlier attempt at fixing CSRF 400s rewrote it
+/// globally and silently broke `/sso/Authenticator`.
 #[tokio::test]
-async fn passthrough_forwards_browser_origin_unchanged() {
+async fn passthrough_forwards_browser_origin_on_sso() {
     let gateway = MockServer::start().await;
     Mock::given(wm_method("GET"))
         .and(wm_path("/sso/Authenticator"))
@@ -694,7 +694,44 @@ async fn passthrough_forwards_browser_origin_unchanged() {
     assert_eq!(
         resp.status(),
         StatusCode::OK,
-        "browser Origin should be forwarded verbatim — never rewrite"
+        "browser Origin should be forwarded verbatim on /sso/* — never rewrite"
+    );
+}
+
+/// On `/v1/api/*` the Gateway's CPAPI CSRF guard rejects browser-supplied
+/// Origin/Referer when the proxy is on a different public host. Rewrite
+/// Origin (and the origin-prefix of Referer) to point at the Gateway's
+/// own host so post-login authenticated calls succeed end-to-end.
+#[tokio::test]
+async fn passthrough_rewrites_origin_on_v1_api() {
+    let gateway = MockServer::start().await;
+    let gateway_uri = gateway.uri();
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/v1/api/portfolio/accounts"))
+        .and(header("origin", gateway_uri.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/api/portfolio/accounts")
+                .header("origin", "https://bezant-server-production.up.railway.app")
+                .header(
+                    "referer",
+                    "https://bezant-server-production.up.railway.app/sso/Dispatcher",
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "/v1/api/* should rewrite Origin to the Gateway origin so CPAPI CSRF passes"
     );
 }
 

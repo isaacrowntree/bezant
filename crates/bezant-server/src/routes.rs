@@ -150,16 +150,55 @@ async fn passthrough_any(
 
     let method_reqwest = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .map_err(|e| bezant::Error::BadRequest(format!("method: {e}")))?;
+    // Origin/Referer policy is path-conditional:
+    //   * `/sso/*` (the interactive login flow) keeps the browser's
+    //     `Origin` verbatim — IBKR's 2FA polling validates it as part
+    //     of its session check, and rewriting it silently breaks the
+    //     `/sso/Authenticator` poll.
+    //   * `/v1/api/*` (CPAPI calls — the post-login surface) rewrites
+    //     `Origin` to the Gateway's own host so its CPAPI CSRF guard
+    //     accepts the call. Without this, post-login `/v1/api/*`
+    //     returns 401 when the proxy is on a different public host
+    //     than the Gateway thinks it's running on (Railway, fly.io,
+    //     ngrok, …).
+    let rewrite_origin = path_only.starts_with("/v1/api/") || path_only == "/v1/api";
+    let gateway_origin = if rewrite_origin {
+        let scheme = target_url.scheme();
+        target_url.host_str().map(|h| match target_url.port() {
+            Some(p) => format!("{scheme}://{h}:{p}"),
+            None => format!("{scheme}://{h}"),
+        })
+    } else {
+        None
+    };
     let mut builder = state.client().http().request(method_reqwest, &target);
     for (name, value) in headers.iter() {
         // Drop hop-by-hop headers per RFC 7230 §6.1 plus `host`/`cookie`
         // (reqwest rebuilds the former, the shared jar replaces the
-        // latter). Origin/Referer are *deliberately* forwarded
-        // verbatim: IBKR's 2FA polling validates them as part of its
-        // session check, and any rewrite silently breaks the
-        // `/sso/Authenticator` flow.
+        // latter).
         if is_hop_by_hop(name.as_str()) {
             continue;
+        }
+        let lower = name.as_str().to_ascii_lowercase();
+        if let Some(ref origin) = gateway_origin {
+            if lower == "origin" {
+                if let Ok(v) = reqwest::header::HeaderValue::from_str(origin) {
+                    builder = builder.header(reqwest::header::ORIGIN, v);
+                }
+                continue;
+            }
+            if lower == "referer" {
+                // Replace the origin prefix of the Referer URL but keep
+                // the path/query — the upstream uses the path to drive
+                // post-login redirects, so we don't want to lose it.
+                if let Ok(orig) = value.to_str() {
+                    let rewritten = rewrite_referer_origin(orig, origin);
+                    if let Ok(v) = reqwest::header::HeaderValue::from_str(&rewritten) {
+                        builder = builder.header(reqwest::header::REFERER, v);
+                    }
+                }
+                continue;
+            }
         }
         if let Ok(v) = reqwest::header::HeaderValue::from_bytes(value.as_bytes()) {
             if let Ok(name) = reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes()) {
@@ -541,6 +580,24 @@ fn is_hop_by_hop_response(name: &str) -> bool {
             | "transfer-encoding"
             | "upgrade"
     )
+}
+
+/// Replace the scheme + host[:port] prefix of `original` with
+/// `new_origin`, preserving path + query. Used to rewrite the Referer
+/// header on `/v1/api/*` requests when the proxy lives on a different
+/// host than the Gateway.
+fn rewrite_referer_origin(original: &str, new_origin: &str) -> String {
+    match url::Url::parse(original) {
+        Ok(u) => {
+            let mut path_and_query = u.path().to_owned();
+            if let Some(q) = u.query() {
+                path_and_query.push('?');
+                path_and_query.push_str(q);
+            }
+            format!("{}{}", new_origin.trim_end_matches('/'), path_and_query)
+        }
+        Err(_) => new_origin.to_owned(),
+    }
 }
 
 /// Strip any `Domain=...` attribute from a Set-Cookie value. The browser

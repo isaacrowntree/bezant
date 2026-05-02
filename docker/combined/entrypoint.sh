@@ -8,25 +8,6 @@ set -e
 echo "[entrypoint] starting combined sidecar (gateway + bezant-server)" >&2
 cd /gw
 
-# When the Gateway is fronted by a reverse proxy that lives on a
-# different public hostname (Railway, fly.io, etc.), the empty default
-# `portalBaseURL` makes CPGateway's CPAPI handlers reject post-login
-# requests with 401 because the browser-supplied Origin/Referer don't
-# match what the Gateway thinks it served. Rewrite the conf at boot
-# from the `PORTAL_BASE_URL` env var (or, if unset, from
-# `RAILWAY_PUBLIC_DOMAIN` which Railway injects automatically).
-PORTAL_URL="${PORTAL_BASE_URL:-}"
-if [ -z "$PORTAL_URL" ] && [ -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]; then
-    PORTAL_URL="https://${RAILWAY_PUBLIC_DOMAIN}"
-fi
-if [ -n "$PORTAL_URL" ]; then
-    echo "[entrypoint] pinning portalBaseURL to $PORTAL_URL" >&2
-    # YAML's quoting is forgiving — wrap in double quotes and escape `/`
-    # and `&` for sed safety.
-    ESCAPED=$(printf '%s' "$PORTAL_URL" | sed -e 's/[\/&]/\\&/g')
-    sed -i "s|portalBaseURL: \"\"|portalBaseURL: \"$ESCAPED\"|" root/conf.yaml
-fi
-
 # Tee the Gateway's stdout+stderr to our own so Railway captures it even
 # if Java decides to re-open file descriptors.
 bin/run.sh root/conf.yaml 2>&1 &
