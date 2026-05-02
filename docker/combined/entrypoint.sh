@@ -50,15 +50,21 @@ if ! kill -0 "$GW_PID" 2>/dev/null; then
 fi
 
 # One final HTTPS probe: the TCP port can be open while Jetty is still
-# wiring routes, which makes bezant-server's first /tickle race.
+# wiring routes, which makes bezant-server's first /tickle race. Bound
+# each individual curl with `--max-time 3` so a Gateway that's slow to
+# respond (or a `portalBaseURL` redirect that turns the probe into an
+# infinite loop) doesn't wedge the entrypoint past the loop's overall
+# 30s budget.
 for _ in $(seq 1 30); do
-    if curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:5000/v1/api/iserver/auth/status | grep -qE '^[234]'; then
+    if curl -sk --max-time 3 -o /dev/null -w '%{http_code}' \
+        https://127.0.0.1:5000/v1/api/iserver/auth/status \
+        | grep -qE '^[234]'; then
         break
     fi
     sleep 1
 done
 
-echo "[entrypoint] Gateway is responsive, starting bezant-server" >&2
+echo "[entrypoint] Gateway is responsive (or probe gave up), starting bezant-server" >&2
 /usr/local/bin/bezant-server &
 BZ_PID=$!
 
