@@ -363,7 +363,10 @@ async fn market_snapshot_requires_conids_param() {
         .await
         .unwrap();
     let (status, body) = response_body(resp).await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    // After the v0.3 typed-error refactor: missing query parameters
+    // surface as `Error::MissingQuery` → 400 (was 500 via `Error::Other`).
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], json!("missing_query_param"));
     assert!(
         body["message"].as_str().unwrap().contains("conids"),
         "unexpected body: {body}"

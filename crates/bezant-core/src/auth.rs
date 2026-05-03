@@ -187,24 +187,30 @@ impl Client {
     /// task — a transient outage is recoverable once the Gateway is back.
     #[must_use]
     pub fn spawn_keepalive(&self, interval: Duration) -> KeepaliveHandle {
+        use tracing::Instrument;
+
         let client = self.clone();
         let (tx, mut rx) = oneshot::channel::<()>();
-        let join = tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            // First tick fires immediately; skip it so we don't hit the
-            // Gateway the microsecond after the caller created the client.
-            ticker.tick().await;
-            loop {
-                tokio::select! {
-                    _ = &mut rx => break,
-                    _ = ticker.tick() => {
-                        if let Err(e) = client.tickle().await {
-                            tracing::warn!(error = %e, "bezant keepalive tickle failed");
+        let span = tracing::info_span!("bezant_keepalive", interval_secs = interval.as_secs());
+        let join = tokio::spawn(
+            async move {
+                let mut ticker = tokio::time::interval(interval);
+                // First tick fires immediately; skip it so we don't hit the
+                // Gateway the microsecond after the caller created the client.
+                ticker.tick().await;
+                loop {
+                    tokio::select! {
+                        _ = &mut rx => break,
+                        _ = ticker.tick() => {
+                            if let Err(e) = client.tickle().await {
+                                tracing::warn!(error = %e, "bezant keepalive tickle failed");
+                            }
                         }
                     }
                 }
             }
-        });
+            .instrument(span),
+        );
         KeepaliveHandle {
             shutdown: Some(tx),
             join: Some(join),

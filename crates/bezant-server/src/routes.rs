@@ -90,6 +90,10 @@ fn is_hop_by_hop(name: &str) -> bool {
     HOP_BY_HOP.iter().any(|h| name.eq_ignore_ascii_case(h))
 }
 
+// `skip_all` because `req` and `state` aren't `Display`; we emit
+// only the safe scalars (method + path) as span fields. Path is
+// already query-stripped — see the `path_only` derivation below.
+#[tracing::instrument(skip_all, fields(method, path))]
 async fn passthrough_any(
     State(state): State<AppState>,
     req: axum::extract::Request,
@@ -105,6 +109,10 @@ async fn passthrough_any(
     // For logs we keep just the path — query strings frequently carry SSO
     // tokens / session ids that we don't want fanned out into log shippers.
     let path_only = req.uri().path().to_string();
+    // Record into the parent span so the rest of the handler's
+    // tracing events inherit them automatically.
+    tracing::Span::current().record("method", tracing::field::display(&method));
+    tracing::Span::current().record("path", tracing::field::display(&path_only));
 
     // Compose the target URL: Gateway root + the incoming URI. We use
     // the client's own derived root (scheme + host + trailing '/')
@@ -647,6 +655,7 @@ fn skipped_step(
     })
 }
 
+#[tracing::instrument(skip_all)]
 async fn health(State(state): State<AppState>) -> Result<Json<HealthBody>, AppError> {
     let status = state.client().auth_status().await?;
     Ok(Json(HealthBody {
@@ -657,10 +666,12 @@ async fn health(State(state): State<AppState>) -> Result<Json<HealthBody>, AppEr
     }))
 }
 
+#[tracing::instrument(skip_all)]
 async fn accounts(State(state): State<AppState>) -> Result<Response<Body>, AppError> {
     passthrough_get(&state, &["portfolio", "accounts"], &[]).await
 }
 
+#[tracing::instrument(skip(state), fields(account_id = %account_id))]
 async fn account_summary(
     State(state): State<AppState>,
     Path(account_id): Path<String>,
@@ -668,12 +679,13 @@ async fn account_summary(
     passthrough_get(&state, &["portfolio", account_id.as_str(), "summary"], &[]).await
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct PositionsQuery {
     #[serde(default)]
     page: u32,
 }
 
+#[tracing::instrument(skip(state), fields(account_id = %account_id, page = q.page))]
 async fn account_positions(
     State(state): State<AppState>,
     Path(account_id): Path<String>,
@@ -688,6 +700,7 @@ async fn account_positions(
     .await
 }
 
+#[tracing::instrument(skip(state), fields(account_id = %account_id))]
 async fn account_ledger(
     State(state): State<AppState>,
     Path(account_id): Path<String>,
@@ -696,6 +709,7 @@ async fn account_ledger(
 }
 
 /// List live + recently-filled orders for one account.
+#[tracing::instrument(skip(state), fields(account_id = %account_id))]
 async fn account_orders(
     State(state): State<AppState>,
     Path(account_id): Path<String>,
@@ -714,6 +728,7 @@ async fn account_orders(
 /// The body is forwarded verbatim to `POST /iserver/account/{id}/orders`.
 /// CPAPI accepts either `{ "orders": [...] }` or a single order object; we
 /// stay out of the way and let IBKR's own validator surface errors.
+#[tracing::instrument(skip(state, body), fields(account_id = %account_id))]
 async fn submit_order(
     State(state): State<AppState>,
     Path(account_id): Path<String>,
@@ -743,6 +758,7 @@ async fn submit_order(
 }
 
 /// Cancel a live order.
+#[tracing::instrument(skip(state), fields(account_id = %account_id, order_id = %order_id))]
 async fn cancel_order(
     State(state): State<AppState>,
     Path((account_id, order_id)): Path<(String, String)>,
@@ -900,6 +916,7 @@ async fn passthrough_get(
 /// `RequestBodyLimitLayer`.)
 const MAX_UPSTREAM_BODY_BYTES: usize = 25 * 1024 * 1024;
 
+#[tracing::instrument(skip_all, fields(upstream_status = %resp.status()))]
 async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
     let status = resp.status();
     let headers_src = resp.headers().clone();

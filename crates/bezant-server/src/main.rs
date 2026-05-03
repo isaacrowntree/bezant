@@ -38,9 +38,10 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use anyhow::Context;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderName, Request, StatusCode};
 use clap::Parser;
 use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer};
 use tracing::{info, info_span, Level};
@@ -142,23 +143,40 @@ async fn main() -> anyhow::Result<()> {
     let trace = TraceLayer::new_for_http()
         .make_span_with(|req: &Request<_>| {
             // Path-only — never the query string (which can carry the
-            // debug token).
+            // debug token). request_id is always present (the
+            // SetRequestIdLayer below mints one if the caller didn't
+            // supply x-request-id) so child spans / log lines correlate.
+            let request_id = req
+                .headers()
+                .get("x-request-id")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("-");
             info_span!(
                 "http",
                 method = %req.method(),
                 path = %req.uri().path(),
+                request_id = %request_id,
             )
         })
         .on_request(DefaultOnRequest::new().level(Level::DEBUG))
         .on_response(DefaultOnResponse::new().level(Level::DEBUG));
 
+    // x-request-id propagation: SetRequestIdLayer mints a UUID per
+    // request if the caller didn't supply x-request-id; PropagateRequestIdLayer
+    // copies the header to the response so downstream loadbalancers /
+    // observability tools can stitch the trace together.
+    let req_id_header = HeaderName::from_static("x-request-id");
     let app = router(state)
+        .layer(PropagateRequestIdLayer::new(req_id_header.clone()))
         .layer(trace)
         .layer(TimeoutLayer::with_status_code(
             StatusCode::GATEWAY_TIMEOUT,
             Duration::from_secs(35),
         ))
-        .layer(RequestBodyLimitLayer::new(10 * 1024 * 1024));
+        .layer(RequestBodyLimitLayer::new(10 * 1024 * 1024))
+        // SetRequestIdLayer is applied last so it runs first on the
+        // request side — every other layer sees the header set.
+        .layer(SetRequestIdLayer::new(req_id_header, MakeRequestUuid));
 
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await
