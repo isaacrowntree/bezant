@@ -83,8 +83,3 @@ Open an issue with:
 
 See [SECURITY.md](SECURITY.md) for the disclosure policy. Short version:
 **do not open a public issue for vulnerabilities**. Email the maintainer.
-
-## Code of Conduct
-
-See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). tl;dr: be kind, assume good
-faith, and don't be a jerk.
