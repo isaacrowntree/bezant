@@ -723,7 +723,9 @@ async fn submit_order(
     {
         let mut segs = url
             .path_segments_mut()
-            .map_err(|()| bezant::Error::other("base url cannot be a base"))?;
+            .map_err(|()| bezant::Error::UrlNotABase {
+                url: state.client().base_url().to_string(),
+            })?;
         segs.push("iserver")
             .push("account")
             .push(account_id.as_str())
@@ -749,7 +751,9 @@ async fn cancel_order(
     {
         let mut segs = url
             .path_segments_mut()
-            .map_err(|()| bezant::Error::other("base url cannot be a base"))?;
+            .map_err(|()| bezant::Error::UrlNotABase {
+                url: state.client().base_url().to_string(),
+            })?;
         segs.push("iserver")
             .push("account")
             .push(account_id.as_str())
@@ -788,7 +792,9 @@ async fn contract_search(
     {
         let mut segs = url
             .path_segments_mut()
-            .map_err(|()| bezant::Error::other("base url cannot be a base"))?;
+            .map_err(|()| bezant::Error::UrlNotABase {
+                url: state.client().base_url().to_string(),
+            })?;
         segs.push("iserver").push("secdef").push("search");
     }
     let body = serde_json::json!({
@@ -813,7 +819,7 @@ async fn market_snapshot(
 ) -> Result<Response<Body>, AppError> {
     let conids = q
         .get("conids")
-        .ok_or_else(|| bezant::Error::other("missing 'conids' query param"))?;
+        .ok_or(bezant::Error::MissingQuery { name: "conids" })?;
     let fields = q
         .get("fields")
         .cloned()
@@ -837,7 +843,9 @@ async fn passthrough_get(
     {
         let mut segs = url
             .path_segments_mut()
-            .map_err(|()| bezant::Error::other("base url cannot be a base"))?;
+            .map_err(|()| bezant::Error::UrlNotABase {
+                url: state.client().base_url().to_string(),
+            })?;
         for seg in path_segments {
             segs.push(seg);
         }
@@ -912,7 +920,14 @@ async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
             );
             Vec::new()
         }
-        Err(e) => return Err(bezant::Error::other(format!("upstream body: {e}")).into()),
+        Err(e) => {
+            return Err(bezant::Error::UpstreamStatus {
+                endpoint: "passthrough",
+                status: status.as_u16(),
+                body_preview: Some(e),
+            }
+            .into())
+        }
     };
 
     let body_is_empty = bytes.is_empty();
@@ -987,7 +1002,7 @@ async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
     let mut response = Response::builder()
         .status(status)
         .body(Body::from(bytes))
-        .map_err(|e| bezant::Error::other(format!("response build: {e}")))?;
+        .map_err(|e| bezant::Error::ResponseBuild(e.to_string()))?;
     *response.headers_mut() = headers;
     Ok(response)
 }

@@ -199,7 +199,13 @@ async fn symbol_cache_errors_on_missing_conid_field() {
     let client = client_for(&format!("{}/v1/api", server.uri()));
     let cache = bezant::SymbolCache::new(client);
     let err = cache.conid_for("AAPL").await.expect_err("expected error");
-    assert!(err.to_string().contains("no conid") || err.to_string().contains("has no conid"));
+    // After the v0.3 typed-error refactor: a contract with no conid
+    // surfaces as `SymbolNotFound` (programmatic match) rather than a
+    // string-substring assertion against `Error::Other`.
+    assert!(
+        matches!(err, bezant::Error::SymbolNotFound { .. }),
+        "expected SymbolNotFound, got {err:?}"
+    );
 }
 
 #[tokio::test]

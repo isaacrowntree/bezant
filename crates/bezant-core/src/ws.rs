@@ -148,33 +148,41 @@ impl WsClient {
     #[tracing::instrument(skip(client), level = "debug")]
     pub async fn connect(client: &Client) -> Result<Self> {
         let tickle = client.tickle().await?;
-        let session = tickle
-            .session
-            .ok_or_else(|| Error::other("tickle returned no session id"))?;
+        let session = tickle.session.ok_or(Error::NoSession)?;
         let ws_url = ws_url_from_base(client.base_url())?;
         let cookie = format!(r#"api={{"session":"{session}"}}"#);
 
         debug!(%ws_url, "bezant: opening websocket");
-        let mut request = ws_url
-            .as_str()
-            .into_client_request()
-            .map_err(|e| Error::other(format!("ws request build: {e}")))?;
+        let mut request = ws_url.as_str().into_client_request().map_err(|source| {
+            Error::WsHandshake {
+                url: ws_url.to_string(),
+                source,
+            }
+        })?;
         request.headers_mut().insert(
             "Cookie",
-            cookie
-                .parse()
-                .map_err(|e| Error::other(format!("cookie header: {e}")))?,
+            cookie.parse().map_err(|source| Error::Header {
+                name: "cookie",
+                source,
+            })?,
         );
         request.headers_mut().insert(
             "User-Agent",
             format!("bezant/{}", env!("CARGO_PKG_VERSION"))
                 .parse()
-                .map_err(|e| Error::other(format!("user-agent header: {e}")))?,
+                .map_err(|source| Error::Header {
+                    name: "user-agent",
+                    source,
+                })?,
         );
 
-        let (stream, _) = tokio_tungstenite::connect_async(request)
-            .await
-            .map_err(|e| Error::other(format!("ws connect: {e}")))?;
+        let (stream, _) =
+            tokio_tungstenite::connect_async(request)
+                .await
+                .map_err(|source| Error::WsHandshake {
+                    url: ws_url.to_string(),
+                    source,
+                })?;
 
         Ok(Self { stream })
     }
@@ -200,7 +208,7 @@ impl WsClient {
         let payload = format!(
             "smd+{conid}+{}",
             serde_json::to_string(&body)
-                .map_err(|e| Error::other(format!("serialise fields: {e}")))?
+                .map_err(|e| Error::WsProtocol(format!("serialise fields: {e}")))?
         );
         self.send_text(payload).await
     }
@@ -238,7 +246,7 @@ impl WsClient {
         self.stream
             .send(Message::text(payload))
             .await
-            .map_err(|e| Error::other(format!("ws send: {e}")))
+            .map_err(|source| Error::WsTransport { source })
     }
 
     /// Pull the next decoded message. `None` means the socket closed.
@@ -247,7 +255,7 @@ impl WsClient {
     /// Any read failure surfaces as [`Error::other`].
     pub async fn next_message(&mut self) -> Result<Option<WsMessage>> {
         while let Some(raw) = self.stream.next().await {
-            let frame = raw.map_err(|e| Error::other(format!("ws recv: {e}")))?;
+            let frame = raw.map_err(|source| Error::WsTransport { source })?;
             match frame {
                 Message::Text(text) => return Ok(Some(classify(text.as_str()))),
                 Message::Binary(bytes) => {
@@ -286,8 +294,8 @@ impl WsClient {
                 loop {
                     match s.next().await {
                         None => return None,
-                        Some(Err(e)) => {
-                            return Some((Err(Error::other(format!("ws recv: {e}"))), s))
+                        Some(Err(source)) => {
+                            return Some((Err(Error::WsTransport { source }), s))
                         }
                         Some(Ok(Message::Text(t))) => {
                             return Some((Ok(classify(t.as_str())), s));
@@ -338,18 +346,22 @@ impl WsClient {
 fn ws_url_from_base(base: &Url) -> Result<Url> {
     let mut ws = base.clone();
     match ws.scheme() {
-        "https" => ws
-            .set_scheme("wss")
-            .map_err(|()| Error::other("failed to set wss scheme"))?,
+        "https" => ws.set_scheme("wss").map_err(|()| Error::WsProtocol(
+            "failed to upgrade base URL scheme to wss".into(),
+        ))?,
         "http" => ws
             .set_scheme("ws")
-            .map_err(|()| Error::other("failed to set ws scheme"))?,
-        s => return Err(Error::other(format!("unsupported base scheme '{s}'"))),
+            .map_err(|()| Error::WsProtocol("failed to upgrade base URL scheme to ws".into()))?,
+        s => {
+            return Err(Error::BadRequest(format!(
+                "unsupported WebSocket base scheme '{s}' (expected http/https)"
+            )))
+        }
     }
     {
-        let mut segs = ws
-            .path_segments_mut()
-            .map_err(|()| Error::other("url is not a base"))?;
+        let mut segs = ws.path_segments_mut().map_err(|()| Error::UrlNotABase {
+            url: base.to_string(),
+        })?;
         segs.push("ws");
     }
     Ok(ws)

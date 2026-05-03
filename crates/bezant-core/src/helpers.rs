@@ -68,16 +68,28 @@ impl Client {
                     return Err(Error::NotAuthenticated)
                 }
                 bezant_api::GetPaginatedPositionsResponse::BadRequest => {
-                    return Err(Error::other("bad request"))
+                    return Err(Error::BadRequest(format!(
+                        "portfolio/{account_id}/positions/{page} returned 400"
+                    )))
                 }
                 bezant_api::GetPaginatedPositionsResponse::InternalServerError => {
-                    return Err(Error::other("upstream 500"))
+                    return Err(Error::UpstreamStatus {
+                        endpoint: "portfolio/positions",
+                        status: 500,
+                        body_preview: None,
+                    })
                 }
                 bezant_api::GetPaginatedPositionsResponse::ServiceUnavailable => {
-                    return Err(Error::other("gateway service unavailable"))
+                    return Err(Error::UpstreamStatus {
+                        endpoint: "portfolio/positions",
+                        status: 503,
+                        body_preview: None,
+                    })
                 }
                 bezant_api::GetPaginatedPositionsResponse::Unknown => {
-                    return Err(Error::other("unknown upstream response"))
+                    return Err(Error::Unknown {
+                        endpoint: "portfolio/positions",
+                    })
                 }
             };
             let n = batch.len();
@@ -144,19 +156,21 @@ impl SymbolCache {
     /// Only `STK`-type matches are cached. If you need options / bonds /
     /// futures, call [`Client::api`] directly. Both hits and misses are
     /// memoised — if a symbol turns out to be invalid, subsequent calls
-    /// return the same [`Error::Other`] without touching the network.
+    /// return [`Error::SymbolNotFound`] without touching the network.
     ///
     /// # Errors
-    /// [`Error::Other`] if the symbol doesn't resolve to any contract,
-    /// plus any transport / decode errors.
+    /// [`Error::SymbolNotFound`] if the symbol doesn't resolve to any
+    /// contract, [`Error::BadConid`] if the upstream returned a contract
+    /// whose conid wasn't a parseable integer, plus any transport /
+    /// decode errors.
     #[tracing::instrument(skip(self), fields(symbol = %symbol), level = "debug")]
     pub async fn conid_for(&self, symbol: &str) -> Result<i64> {
         if let Some(entry) = lock(&self.cache).get(symbol).copied() {
             return match entry {
                 Some(conid) => Ok(conid),
-                None => Err(Error::other(format!(
-                    "no contracts for symbol '{symbol}' (cached)"
-                ))),
+                None => Err(Error::SymbolNotFound {
+                    symbol: symbol.to_owned(),
+                }),
             };
         }
 
@@ -179,34 +193,53 @@ impl SymbolCache {
             bezant_api::GetContractSymbolsResponse::BadRequest => {
                 // BadRequest means the symbol itself is malformed — cache
                 // the negative so we don't hit the CDN over and over for
-                // a caller that's retrying.
+                // a caller that's retrying. Surface as `SymbolNotFound`
+                // since the practical result is the same.
                 lock(&self.cache).insert(symbol.to_owned(), None);
-                return Err(Error::other(format!("bad symbol: {symbol}")));
+                return Err(Error::SymbolNotFound {
+                    symbol: symbol.to_owned(),
+                });
             }
             bezant_api::GetContractSymbolsResponse::Unauthorized => {
                 return Err(Error::NotAuthenticated)
             }
             bezant_api::GetContractSymbolsResponse::InternalServerError => {
-                return Err(Error::other("upstream 500"))
+                return Err(Error::UpstreamStatus {
+                    endpoint: "iserver/secdef/search",
+                    status: 500,
+                    body_preview: None,
+                })
             }
             bezant_api::GetContractSymbolsResponse::ServiceUnavailable => {
-                return Err(Error::other("gateway service unavailable"))
+                return Err(Error::UpstreamStatus {
+                    endpoint: "iserver/secdef/search",
+                    status: 503,
+                    body_preview: None,
+                })
             }
             bezant_api::GetContractSymbolsResponse::Unknown => {
-                return Err(Error::other("unknown upstream response"))
+                return Err(Error::Unknown {
+                    endpoint: "iserver/secdef/search",
+                })
             }
         };
         let Some(first) = items.first() else {
             lock(&self.cache).insert(symbol.to_owned(), None);
-            return Err(Error::other(format!("no contracts for symbol '{symbol}'")));
+            return Err(Error::SymbolNotFound {
+                symbol: symbol.to_owned(),
+            });
         };
         let conid_str = first
             .conid
             .as_deref()
-            .ok_or_else(|| Error::other(format!("contract for '{symbol}' has no conid")))?;
-        let conid: i64 = conid_str
-            .parse()
-            .map_err(|e| Error::other(format!("invalid conid '{conid_str}': {e}")))?;
+            .ok_or_else(|| Error::SymbolNotFound {
+                symbol: symbol.to_owned(),
+            })?;
+        let conid: i64 = conid_str.parse().map_err(|source| Error::BadConid {
+            symbol: symbol.to_owned(),
+            raw: conid_str.to_owned(),
+            source,
+        })?;
 
         lock(&self.cache).insert(symbol.to_owned(), Some(conid));
         Ok(conid)

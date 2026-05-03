@@ -57,7 +57,9 @@ impl Client {
         // fires in practice.
         let mut url = self.base_url().clone();
         url.path_segments_mut()
-            .map_err(|()| Error::other("base url cannot be a base"))?
+            .map_err(|()| Error::UrlNotABase {
+                url: self.base_url().to_string(),
+            })?
             .push("iserver")
             .push("auth")
             .push("status");
@@ -105,18 +107,25 @@ impl Client {
             if location.contains("/sso/login") || location.contains("/sso/dispatcher") {
                 return Err(Error::NotAuthenticated);
             }
-            return Err(Error::other(format!(
-                "auth_status returned {status} with unexpected Location: {location}"
-            )));
+            return Err(Error::UpstreamStatus {
+                endpoint: "iserver/auth/status",
+                status: status.as_u16(),
+                body_preview: Some(format!("redirect to: {location}")),
+            });
         }
         if !status.is_success() {
-            return Err(Error::other(format!("auth_status returned {status}")));
+            return Err(Error::UpstreamStatus {
+                endpoint: "iserver/auth/status",
+                status: status.as_u16(),
+                body_preview: None,
+            });
         }
         let parsed: bezant_api::BrokerageSessionStatus = resp.json().await.map_err(|e| {
-            Error::Decode(format!(
-                "auth_status (POST {url}, status {status}): {e}",
-                url = self.base_url(),
-            ))
+            Error::Decode {
+                endpoint: format!("POST {}/iserver/auth/status", self.base_url()),
+                status: status.as_u16(),
+                message: e.to_string(),
+            }
         })?;
         Ok(AuthStatus::from(parsed))
     }
@@ -147,9 +156,9 @@ impl Client {
                 })
             }
             bezant_api::GetSessionTokenResponse::Unauthorized => Err(Error::NotAuthenticated),
-            bezant_api::GetSessionTokenResponse::Unknown => {
-                Err(Error::other("unknown tickle response"))
-            }
+            bezant_api::GetSessionTokenResponse::Unknown => Err(Error::Unknown {
+                endpoint: "iserver/auth/tickle",
+            }),
         }
     }
 
@@ -230,7 +239,7 @@ impl KeepaliveHandle {
         }
         if let Some(join) = self.join.take() {
             join.await
-                .map_err(|e| Error::other(format!("keepalive task panicked: {e}")))?;
+                .map_err(|e| Error::Other(format!("keepalive task panicked: {e}")))?;
         }
         Ok(())
     }
