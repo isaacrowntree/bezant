@@ -144,30 +144,66 @@ impl Client {
     /// least once a minute from a background task, or use
     /// [`Client::spawn_keepalive`].
     ///
+    /// We drive a raw POST instead of the generated client so we can
+    /// pin `Content-Length: 0` + Origin + Referer the same way
+    /// [`Client::auth_status`] does. The typed `get_session_token`
+    /// emits an empty POST without an explicit Content-Length, which
+    /// Akamai (fronting the CPAPI) rejects with `411 Length Required`.
+    /// That made the keepalive silently fail on Akamai-fronted
+    /// deploys for every release prior to this fix — sessions died
+    /// ~5 minutes after every login.
+    ///
     /// # Errors
-    /// Transport + decode errors.
+    /// Transport + decode errors; [`Error::NotAuthenticated`] when
+    /// the Gateway has no session.
     #[tracing::instrument(skip(self), level = "debug")]
     pub async fn tickle(&self) -> Result<TickleResponse> {
+        let mut url = self.base_url().clone();
+        url.path_segments_mut()
+            .map_err(|()| Error::UrlNotABase {
+                url: self.base_url().to_string(),
+            })?
+            .push("tickle");
+        url.set_query(None);
+        let gateway_origin = self
+            .gateway_root_url()
+            .as_str()
+            .trim_end_matches('/')
+            .to_owned();
         let resp = self
-            .api()
-            .get_session_token(bezant_api::GetSessionTokenRequest::default())
-            .await?;
-        match resp {
-            bezant_api::GetSessionTokenResponse::Ok(payload) => {
-                let session = match &payload {
-                    bezant_api::TickleResponse::Successful(s) => s.session.clone(),
-                    bezant_api::TickleResponse::Failed(_) => None,
-                };
-                Ok(TickleResponse {
-                    session,
-                    raw: payload,
-                })
-            }
-            bezant_api::GetSessionTokenResponse::Unauthorized => Err(Error::NotAuthenticated),
-            bezant_api::GetSessionTokenResponse::Unknown => Err(Error::Unknown {
-                endpoint: "iserver/auth/tickle",
-            }),
+            .http()
+            .post(url.clone())
+            .header(reqwest::header::CONTENT_LENGTH, "0")
+            .header(reqwest::header::ORIGIN, &gateway_origin)
+            .header(reqwest::header::REFERER, format!("{gateway_origin}/"))
+            .send()
+            .await
+            .map_err(Error::Http)?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(Error::NotAuthenticated);
         }
+        if !status.is_success() {
+            return Err(Error::UpstreamStatus {
+                endpoint: "tickle",
+                status: status.as_u16(),
+                body_preview: None,
+            });
+        }
+        let payload: bezant_api::TickleResponse =
+            resp.json().await.map_err(|e| Error::Decode {
+                endpoint: format!("POST {url}"),
+                status: status.as_u16(),
+                message: e.to_string(),
+            })?;
+        let session = match &payload {
+            bezant_api::TickleResponse::Successful(s) => s.session.clone(),
+            bezant_api::TickleResponse::Failed(_) => None,
+        };
+        Ok(TickleResponse {
+            session,
+            raw: payload,
+        })
     }
 
     /// Convenience: return the status if authenticated, else a typed error
