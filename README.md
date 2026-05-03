@@ -87,6 +87,7 @@ async fn main() -> bezant::Result<()> {
   wiremock-mocked gateways.
 - **Dual MIT / Apache-2.0** licensing following the Rust ecosystem convention.
 
+<!-- ANCHOR: pi-cloudflare -->
 ## Production deployment: Cloudflare Zero Trust + Pi
 
 Real-world IBKR API deploys hit a wall: **`api.ibkr.com` (fronted by
@@ -202,6 +203,8 @@ login" alert rather than crashing.
   who can read it can resume the IBKR session and trade your account.
   bezant-server is **single-tenant by design** — don't deploy this
   proxy multi-tenant.
+
+<!-- ANCHOR_END: pi-cloudflare -->
 
 ## Repository layout
 

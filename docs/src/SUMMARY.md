@@ -23,6 +23,7 @@
 
 # Operations
 
+- [Cloudflare Zero Trust + Pi (recommended)](ops/pi-cloudflare.md)
 - [Docker deployment](ops/docker.md)
 - [Railway / cloud deployment](ops/cloud.md)
 - [Upgrading the vendored spec](ops/spec-upgrade.md)

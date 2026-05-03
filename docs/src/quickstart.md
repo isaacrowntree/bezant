@@ -41,11 +41,24 @@ Everything from here is optional sugar on top.
 
 ## Rust
 
+```sh
+cargo add bezant-core tokio --features tokio/full
+```
+
+Or in `Cargo.toml`:
+
 ```toml
-# Cargo.toml
 [dependencies]
-bezant = { git = "https://github.com/isaacrowntree/bezant", package = "bezant-core" }
+bezant-core = "0.3"
 tokio = { version = "1", features = ["full"] }
+```
+
+The crate publishes its lib as `bezant`, so you `use bezant::*` regardless
+of the manifest entry. There's also a `bezant::prelude` for the common
+imports:
+
+```rust,no_run
+use bezant::prelude::*;
 ```
 
 ```rust,no_run
@@ -85,15 +98,22 @@ console.log(accounts);
 ## CLI
 
 ```sh
-cargo install --git https://github.com/isaacrowntree/bezant bezant-cli
-bezant health --pretty
-bezant positions DU123456 --pretty
+cargo install bezant-cli
+bezant health
+bezant accounts --output table
+bezant positions DU123456 --output table
+bezant quote AAPL
+bezant orders DU123456 --output table
 ```
+
+`--output {json,table}` controls the format; default is `json` for
+piping into `jq`. Tabular endpoints (`accounts`, `positions`, `orders`)
+get a comfy-table renderer when you pass `--output table`.
 
 ## MCP (Claude Desktop / Cursor / Continue)
 
 ```sh
-cargo install --git https://github.com/isaacrowntree/bezant bezant-mcp
+cargo install bezant-mcp
 ```
 
 Add to your client config:
