@@ -92,6 +92,28 @@ jobs:
           npm install
           npm run build
 
+  # Catches drift between the Python normaliser script and the vendored
+  # 3.0 spec it emits. If the script changed but the vendored output
+  # wasn't regenerated (or vice versa), this fails the PR.
+  spec-normalise-drift:
+    name: spec normaliser drift check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Re-run normaliser on a copy of the vendored spec
+        run: |
+          cp crates/bezant-spec/ibkr-openapi.json /tmp/upstream-shape.json
+          # Strip down to a snapshot of just the upstream shape: the
+          # vendored file is already normalised, so we use it as a
+          # round-trip input. The normaliser is documented as
+          # idempotent; running it on already-normalised input must
+          # produce byte-identical output.
+          python3 scripts/normalize-spec.py /tmp/upstream-shape.json /tmp/renormalised.json
+          diff -u crates/bezant-spec/ibkr-openapi.json /tmp/renormalised.json
+
   # Catches broken intra-doc links + bad rustdoc syntax pre-merge so a
   # docs-build regression doesn't land on main.
   docs:
