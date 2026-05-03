@@ -31,7 +31,7 @@
 
 use std::time::Duration;
 
-use futures_util::{Sink, SinkExt, Stream, StreamExt};
+use futures_util::{SinkExt, Stream, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::net::TcpStream;
@@ -54,6 +54,15 @@ pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub struct WsClient {
     stream: WsStream,
 }
+
+/// Concrete name for the sink half of [`WsClient::split`] — what
+/// `futures_util` `SplitSink` resolves to over a TLS-wrapped
+/// tungstenite stream. Re-exposed so callers can store it in a
+/// struct field without naming an `impl Trait`-only type.
+pub type WsSink = futures_util::stream::SplitSink<WsStream, Message>;
+
+/// Concrete name for the stream half of [`WsClient::split`].
+pub type WsRecv = futures_util::stream::SplitStream<WsStream>;
 
 /// A decoded CPAPI frame. Most messages fall into one of the variants below,
 /// but the CPAPI occasionally emits payloads we haven't modelled — those end
@@ -90,6 +99,72 @@ pub enum WsMessage {
         /// binary decoder losses.
         error: String,
     },
+}
+
+impl WsMessage {
+    /// Return a static label for the message variant. Useful for
+    /// `tracing::Span::record("topic", ...)` and metrics labels.
+    #[must_use]
+    pub fn topic(&self) -> &'static str {
+        match self {
+            Self::Heartbeat => "heartbeat",
+            Self::System(_) => "system",
+            Self::MarketData { .. } => "market_data",
+            Self::Order(_) => "order",
+            Self::Pnl(_) => "pnl",
+            Self::Other(_) => "other",
+            Self::Malformed { .. } => "malformed",
+        }
+    }
+
+    /// Borrow the inner [`Value`] for variants that carry one. `None`
+    /// for [`WsMessage::Heartbeat`] and [`WsMessage::Malformed`] (which
+    /// has no parsed value to lend).
+    #[must_use]
+    pub fn as_value(&self) -> Option<&Value> {
+        match self {
+            Self::System(v) | Self::Order(v) | Self::Pnl(v) | Self::Other(v) => Some(v),
+            Self::MarketData { payload, .. } => Some(payload),
+            Self::Heartbeat | Self::Malformed { .. } => None,
+        }
+    }
+}
+
+/// Handle to a single live WebSocket subscription. Returned by the
+/// `WsClient::subscribe_*` calls so callers can cancel an individual
+/// feed without remembering the (topic, conid) pair themselves.
+///
+/// `cancel` consumes the handle to prevent double-cancel. The handle
+/// is `Send + Sync + Clone` so it can be stashed in a registry struct
+/// shared between tasks; `Clone` exists to support that pattern but
+/// double-cancel is harmless beyond a redundant frame on the wire.
+#[derive(Debug, Clone)]
+pub struct Subscription {
+    /// The unsubscribe payload to send to cancel this feed.
+    cancel_payload: String,
+    /// Human-readable label for telemetry — `market_data:265598`,
+    /// `orders`, `pnl`.
+    pub name: String,
+}
+
+impl Subscription {
+    /// Cancel this subscription by sending the matching `umd`/`uor`/`upl`
+    /// frame on `ws`. Consumes the handle. Errors propagate as
+    /// [`Error::WsTransport`] — but if the socket is already closed
+    /// the upstream cancellation is implicit, callers can usually
+    /// ignore the error.
+    pub async fn cancel(self, ws: &mut WsClient) -> Result<()> {
+        ws.send_text(self.cancel_payload).await
+    }
+
+    /// Get the cancel payload bytes — exposed for callers that want
+    /// to send the cancellation through a different sink (e.g. the
+    /// returned half of [`WsClient::split`]) rather than the original
+    /// `WsClient`.
+    #[must_use]
+    pub fn cancel_payload(&self) -> &str {
+        &self.cancel_payload
+    }
 }
 
 /// Market-data field codes used when subscribing. See
@@ -190,14 +265,19 @@ impl WsClient {
     /// Subscribe to level-1 market data for a single contract id. Use
     /// [`MarketDataFields::default_l1`] if you just want the common fields.
     ///
+    /// Returns a [`Subscription`] handle — call [`Subscription::cancel`]
+    /// when you're done with the feed instead of tracking the conid
+    /// yourself.
+    ///
     /// # Errors
-    /// Any send failure surfaces as [`Error::other`].
+    /// Any send failure surfaces as [`Error::WsTransport`] /
+    /// [`Error::WsProtocol`].
     #[tracing::instrument(skip(self, fields), fields(conid = conid), level = "debug")]
     pub async fn subscribe_market_data(
         &mut self,
         conid: i64,
         fields: &MarketDataFields,
-    ) -> Result<()> {
+    ) -> Result<Subscription> {
         #[derive(Serialize)]
         struct Body<'a> {
             fields: &'a [String],
@@ -210,31 +290,48 @@ impl WsClient {
             serde_json::to_string(&body)
                 .map_err(|e| Error::WsProtocol(format!("serialise fields: {e}")))?
         );
-        self.send_text(payload).await
+        self.send_text(payload).await?;
+        Ok(Subscription {
+            cancel_payload: format!("umd+{conid}+{{}}"),
+            name: format!("market_data:{conid}"),
+        })
     }
 
-    /// Unsubscribe from a previously-subscribed market data feed.
+    /// Unsubscribe from a previously-subscribed market data feed by
+    /// raw conid. Prefer [`Subscription::cancel`] on the handle returned
+    /// by [`Self::subscribe_market_data`] — this raw form remains for
+    /// callers that already track conids themselves.
     ///
     /// # Errors
-    /// Any send failure surfaces as [`Error::other`].
+    /// Any send failure surfaces as [`Error::WsTransport`].
     pub async fn unsubscribe_market_data(&mut self, conid: i64) -> Result<()> {
         self.send_text(format!("umd+{conid}+{{}}")).await
     }
 
-    /// Subscribe to order status updates.
+    /// Subscribe to order status updates. Returns a [`Subscription`]
+    /// you can cancel later.
     ///
     /// # Errors
-    /// Any send failure surfaces as [`Error::other`].
-    pub async fn subscribe_orders(&mut self) -> Result<()> {
-        self.send_text("sor+{}".into()).await
+    /// Any send failure surfaces as [`Error::WsTransport`].
+    pub async fn subscribe_orders(&mut self) -> Result<Subscription> {
+        self.send_text("sor+{}".into()).await?;
+        Ok(Subscription {
+            cancel_payload: "uor+{}".into(),
+            name: "orders".into(),
+        })
     }
 
-    /// Subscribe to PnL updates.
+    /// Subscribe to PnL updates. Returns a [`Subscription`] you can
+    /// cancel later.
     ///
     /// # Errors
-    /// Any send failure surfaces as [`Error::other`].
-    pub async fn subscribe_pnl(&mut self) -> Result<()> {
-        self.send_text("spl+{}".into()).await
+    /// Any send failure surfaces as [`Error::WsTransport`].
+    pub async fn subscribe_pnl(&mut self) -> Result<Subscription> {
+        self.send_text("spl+{}".into()).await?;
+        Ok(Subscription {
+            cancel_payload: "upl+{}".into(),
+            name: "pnl".into(),
+        })
     }
 
     /// Send a raw text frame. Useful for subscribing to topics Bezant doesn't
@@ -318,16 +415,13 @@ impl WsClient {
     /// Split the client into independent sink + stream halves so one task can
     /// send and another can receive concurrently.
     ///
-    /// Returned types wrap tokio-tungstenite's halves directly — callers who
-    /// want advanced control (close frames, custom flushing) can use the
-    /// underlying types from that crate.
-    pub fn split(
-        self,
-    ) -> (
-        impl Sink<Message, Error = tokio_tungstenite::tungstenite::Error>,
-        impl Stream<Item = std::result::Result<Message, tokio_tungstenite::tungstenite::Error>>,
-    ) {
-        self.stream.split()
+    /// Returns concrete `SplitSink`/`SplitStream` types from
+    /// `futures_util` so callers can name them in struct fields
+    /// without resorting to `Box<dyn …>` or `impl Trait`-only
+    /// associated types.
+    pub fn split(self) -> (WsSink, WsRecv) {
+        let (sink, stream) = self.stream.split();
+        (sink, stream)
     }
 
     /// How long to wait between application-level pings if you implement a
@@ -446,5 +540,66 @@ mod tests {
     #[test]
     fn classify_malformed_text() {
         assert!(matches!(classify("not-json"), WsMessage::Malformed { .. }));
+    }
+
+    #[test]
+    fn ws_message_topic_is_static_label() {
+        assert_eq!(WsMessage::Heartbeat.topic(), "heartbeat");
+        assert_eq!(
+            WsMessage::MarketData {
+                conid: 1,
+                payload: serde_json::json!({})
+            }
+            .topic(),
+            "market_data"
+        );
+        assert_eq!(WsMessage::Order(serde_json::json!({})).topic(), "order");
+        assert_eq!(WsMessage::Pnl(serde_json::json!({})).topic(), "pnl");
+        assert_eq!(WsMessage::System(serde_json::json!({})).topic(), "system");
+        assert_eq!(WsMessage::Other(serde_json::json!({})).topic(), "other");
+        assert_eq!(
+            WsMessage::Malformed {
+                text: "x".into(),
+                error: "y".into()
+            }
+            .topic(),
+            "malformed"
+        );
+    }
+
+    #[test]
+    fn ws_message_as_value_returns_payload_for_data_variants() {
+        let v = serde_json::json!({"hello": "world"});
+        assert_eq!(WsMessage::Order(v.clone()).as_value(), Some(&v));
+        assert_eq!(
+            WsMessage::MarketData {
+                conid: 1,
+                payload: v.clone()
+            }
+            .as_value(),
+            Some(&v)
+        );
+        assert_eq!(WsMessage::Heartbeat.as_value(), None);
+        assert_eq!(
+            WsMessage::Malformed {
+                text: "x".into(),
+                error: "y".into()
+            }
+            .as_value(),
+            None
+        );
+    }
+
+    #[test]
+    fn subscription_cancel_payload_round_trips_topic() {
+        // Construct a Subscription synthetically (the public API
+        // requires a live WsClient, but the cancel_payload field is
+        // pub(crate) and the accessor is public).
+        let sub = Subscription {
+            cancel_payload: "umd+265598+{}".into(),
+            name: "market_data:265598".into(),
+        };
+        assert_eq!(sub.cancel_payload(), "umd+265598+{}");
+        assert_eq!(sub.name, "market_data:265598");
     }
 }

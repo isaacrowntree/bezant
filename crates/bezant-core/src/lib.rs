@@ -55,7 +55,7 @@ pub use helpers::{
     ContractSummary, Position, SymbolCache, MAX_POSITION_PAGES, POSITIONS_PAGE_SIZE,
 };
 pub use jar::NameKeyedJar;
-pub use ws::{MarketDataFields, WsClient, WsMessage};
+pub use ws::{MarketDataFields, Subscription, WsClient, WsMessage, WsRecv, WsSink};
 
 /// Re-export of the auto-generated API crate for callers that want raw access.
 pub use bezant_api as api;
