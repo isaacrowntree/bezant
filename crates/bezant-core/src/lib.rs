@@ -63,3 +63,30 @@ pub use bezant_api as api;
 /// Re-export of [`url::Url`] so callers can name the return type of
 /// [`Client::base_url`] without adding `url` to their own `Cargo.toml`.
 pub use url::Url;
+
+/// Re-export of [`reqwest::StatusCode`] — callers using
+/// [`Client::http`] frequently need it and otherwise have to add
+/// `reqwest` to their own `Cargo.toml` just to spell the type.
+pub use reqwest::StatusCode;
+
+/// Glob-importable prelude for the typical bot use case:
+/// `Client`, `ClientBuilder`, `Result`, `Error`, `SymbolCache`,
+/// `KeepaliveHandle`. Optimised for `use bezant::prelude::*;`.
+///
+/// ```no_run
+/// use bezant::prelude::*;
+///
+/// # async fn run() -> Result<()> {
+/// let client = Client::new("https://localhost:5000/v1/api")?;
+/// let cache = SymbolCache::new(client);
+/// let aapl = cache.conid_for("AAPL").await?;
+/// println!("AAPL = {aapl}");
+/// # Ok(())
+/// # }
+/// ```
+pub mod prelude {
+    pub use crate::{
+        AuthStatus, Client, ClientBuilder, Error, KeepaliveHandle, Position, Result, SymbolCache,
+        TickleResponse,
+    };
+}

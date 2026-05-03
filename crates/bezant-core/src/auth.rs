@@ -9,7 +9,12 @@ use crate::error::{Error, Result};
 
 /// Simplified view of the Gateway's brokerage session status, projected from
 /// the generated [`bezant_api::BrokerageSessionStatus`] type.
+///
+/// `#[non_exhaustive]` so adding a field in a point release isn't a SemVer
+/// break — match with `AuthStatus { authenticated, connected, .. }` rather
+/// than positional destructuring.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AuthStatus {
     /// Whether the Gateway is authenticated.
     pub authenticated: bool,
@@ -33,7 +38,11 @@ impl From<bezant_api::BrokerageSessionStatus> for AuthStatus {
 }
 
 /// Response from a tickle call, projected from the generated type.
+///
+/// `#[non_exhaustive]` so adding a field in a point release isn't a SemVer
+/// break.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TickleResponse {
     /// Session identifier the Gateway returned, if any.
     pub session: Option<String>,

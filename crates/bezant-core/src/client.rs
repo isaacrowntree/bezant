@@ -119,6 +119,15 @@ pub struct ClientBuilder {
     http1_only: bool,
 }
 
+impl Default for ClientBuilder {
+    /// Create a builder pointed at [`DEFAULT_BASE_URL`] — the
+    /// local Docker setup. Override via [`ClientBuilder::new`] when
+    /// you target a non-default Gateway address.
+    fn default() -> Self {
+        Self::new(DEFAULT_BASE_URL)
+    }
+}
+
 impl ClientBuilder {
     /// Start a new builder pointed at `base_url`.
     pub fn new(base_url: impl AsRef<str>) -> Self {
