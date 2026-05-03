@@ -31,6 +31,12 @@
 #![allow(non_snake_case)]
 #![allow(unused_imports)]
 #![allow(unused_variables)]
+// Generated docstrings frequently include `[1]` / `[0]` literals that
+// rustdoc tries to parse as intra-doc links, plus bare URLs that
+// aren't formal hyperlinks. Suppress the warnings rather than
+// mass-edit the generator output.
+#![allow(rustdoc::broken_intra_doc_links)]
+#![allow(rustdoc::bare_urls)]
 
 pub mod generated;
 

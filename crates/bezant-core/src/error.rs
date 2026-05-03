@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-/// Result alias using [`Error`].
+/// Result alias using [`enum@Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Boxed error suitable for round-tripping heterogeneous upstream errors.

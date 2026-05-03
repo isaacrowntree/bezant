@@ -7,6 +7,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-03
+
+The "polish before crates.io" release. v0.2 hardened the proxy and
+deploy pattern; v0.3 promotes the typed surface, observability, and
+ergonomic gaps that survived. Six commits, organised into five
+phases:
+
+### Added
+
+- **Typed `Error` variants.** ~25 `Error::Other(String)` call sites
+  promoted into 11 typed variants:
+  `UpstreamStatus { endpoint, status, body_preview }`, `Unknown`,
+  `UrlNotABase`, `MissingQuery`, `Header`, `SymbolNotFound`,
+  `BadConid`, `WsHandshake`, `WsTransport`, `WsProtocol`,
+  `ResponseBuild`, plus a structured `Decode { endpoint, status, message }`.
+  Callers can branch on the cause for retry / recovery instead of
+  substring-matching strings.
+- **`Error::is_retryable()`** — backoff loops can decide on a typed
+  predicate. Transient transport errors, upstream 5xx, 429, NoSession
+  and WS transport are flagged retryable; everything else (caller
+  input, auth, data-shape) is not.
+- **`bezant::prelude`** module re-exports the common surface (`Client`,
+  `Result`, `Error`, `SymbolCache`, `KeepaliveHandle`, `AuthStatus`,
+  `TickleResponse`, `Position`). `use bezant::prelude::*;` for the
+  typical bot use case.
+- **Per-request correlation IDs.** `tower_http::request_id::SetRequestIdLayer`
+  + `PropagateRequestIdLayer`; UUID minted per request, echoed in
+  the response, recorded in the `http` parent span.
+- **`#[tracing::instrument]`** on every typed handler in
+  `bezant-server::routes`, plus the keepalive task gets its own
+  `bezant_keepalive` span via `tracing::Instrument`.
+- **Graceful shutdown.** `axum::serve(...).with_graceful_shutdown(shutdown_signal())`
+  drains in-flight requests on SIGTERM/SIGINT, then explicitly
+  awaits `keepalive.stop()` so the tickle task closes cleanly.
+- **`tower::limit::ConcurrencyLimitLayer(256)`** caps simultaneous
+  handlers — a misbehaving caller can't exhaust upstream connections
+  or get the IBKR account locked by hammering rate limits.
+- **`KeepaliveHandle` `impl Drop`** — sends the shutdown signal so
+  a forgotten handle doesn't keep tickling forever. Doc previously
+  claimed "drop-to-stop" but the impl wasn't there.
+- **WebSocket `Subscription` handle.** `WsClient::subscribe_*` now
+  return a `Subscription` that callers cancel via
+  `Subscription::cancel(&mut ws).await` — no more tracking
+  (topic, conid) pairs by hand. `cancel_payload()` exposes the raw
+  bytes for callers using `WsClient::split` halves.
+- **`WsMessage::topic()` + `as_value()`** accessors for routing on
+  message type without pattern-matching every variant.
+- **`WsClient::split`** returns concrete `WsSink`/`WsRecv` type
+  aliases (`futures_util::SplitSink/SplitStream` over the TLS
+  stream) — callers can store the halves in struct fields without
+  `Box<dyn …>`.
+- **`bezant-cli --output {json,table}`** flag with `comfy-table`
+  rendering for tabular endpoints (accounts, summary, positions,
+  orders, health, quote). Non-tabular endpoints fall back to
+  pretty-printed JSON.
+- **`bezant quote SYMBOL`** subcommand — symbol → conid via cache
+  → snapshot for default level-1 fields.
+- **`bezant orders ACCOUNT`** subcommand — live + recently-filled
+  orders; normalises both `{"orders":[...]}` and bare-array Gateway
+  shapes.
+- **`bezant-spec` post-normalisation invariant tests** — 14 Rust
+  tests pin the postconditions each of the 13 Python normaliser
+  steps establishes. CI `spec-normalise-drift` job re-runs the
+  Python normaliser against the vendored output and asserts
+  byte-identical output (enforces idempotency permanently).
+
+### Changed
+
+- **Reqwest pool tuning.** `connect_timeout(5s)` (so a dead Gateway
+  surfaces fast for liveness probes), `pool_max_idle_per_host(32)`
+  (was unbounded; leak risk under bursty traffic),
+  `pool_idle_timeout(90s)`, `tcp_keepalive(30s)`.
+- **`AuthStatus` and `TickleResponse`** marked `#[non_exhaustive]`
+  so adding a field in a point release isn't a SemVer break.
+- **`ClientBuilder::default()`** returns a builder pointed at
+  `DEFAULT_BASE_URL` for the most common case.
+- **`reqwest::StatusCode`** re-exported from `bezant-core` so
+  callers using `Client::http()` don't need `reqwest` in their
+  own `Cargo.toml`.
+- **`AppError::into_response`** logs every mapped 4xx/5xx at
+  `warn!`/`error!` so production debuggability doesn't depend on
+  every handler emitting its own span event. Branches on
+  `reqwest::Error::is_timeout()` / `is_connect()` for distinct
+  504 / 503 / 502 status codes.
+- **`/debug/probe` per-step `tokio::time::timeout(5s)`** — a hung
+  Gateway no longer takes the whole probe with it.
+- **`/debug/probe` body_preview redacts** `session`, `ssoConclusion`,
+  and any key containing `token`/`secret` (case-insensitive)
+  before exposing them. Prevents debug-token holders from scraping
+  live IBKR session material via the probe surface.
+- **`bezant-cli` deprecates `--reject-invalid-certs`** in favour of
+  `BEZANT_VERIFY_TLS` (matches `bezant-server`). The double-negative
+  was easy to leave invalid-cert acceptance on in production.
+- **`bezant-cli` `paginated_positions`** emits a stderr warning when
+  `MAX_POSITION_PAGES` is hit so the caller knows results may be
+  truncated. Silently hitting the cap was a coverage gap.
+
+### Tests
+
+- Total **132+** tests across the workspace (was 97 at v0.2 release):
+  - 5 inline error tests (`Send + Sync`, `is_retryable` matrix,
+    Display formatting).
+  - 2 keepalive tests (`stop` cleanly, `Drop` sends signal).
+  - 4 redaction tests (token-key fields, nested objects, non-JSON
+    pass-through).
+  - 3 WS message accessor + Subscription round-trip tests.
+  - 14 spec-normaliser post-condition tests.
+  - 4 new CLI tests (quote, orders, `--output table` table form,
+    `--output table` JSON fallback).
+
+### Security
+
+- Bearer/Basic `Authorization` headers no longer forwarded to
+  CPGateway by `passthrough_any`. CPGateway doesn't consume them;
+  forwarding is pure attack surface.
+- Caller-controlled `X-Forwarded-*` / `Forwarded` / `X-Real-IP` no
+  longer forwarded — caller could otherwise spoof their apparent
+  source IP downstream.
+- `TraceLayer`'s span records request *path* not *uri* — the URI
+  carries `?token=…` for `/debug/*` calls and we don't want it in
+  span fields / log shippers.
+
 ## [0.2.0] — 2026-05-03
 
 This release hardens the production deploy story: a residential-Pi +

@@ -3,13 +3,15 @@
 //! Interactive Brokers publishes the spec at
 //! <https://api.ibkr.com/gw/api/v3/api-docs> as OpenAPI **3.0**. Bezant
 //! vendors a pinned copy so downstream crates always build from a known
-//! version. For Rust codegen via [`bezant-api`] we upgrade the spec to
-//! **3.1** (see [`SPEC_JSON_3_1`]) — the 3.0 source is preserved via
-//! [`SPEC_JSON`] so consumers running their own generator can pick whichever
-//! major they need.
+//! version. For Rust codegen via the [`bezant-api`] crate we upgrade
+//! the spec to **3.1** (see [`SPEC_JSON_3_1`]) — the 3.0 source is
+//! preserved via [`SPEC_JSON`] so consumers running their own generator
+//! can pick whichever major they need.
 //!
 //! Refresh the vendored copy with `scripts/refresh-spec.sh`, then run
 //! `scripts/codegen.sh` to regenerate the 3.1 derivative and the Rust client.
+//!
+//! [`bezant-api`]: https://docs.rs/bezant-api
 
 /// The pinned IBKR OpenAPI 3.0 spec as a UTF-8 string — verbatim from
 /// upstream.

@@ -21,8 +21,8 @@ name = "bezant"
 path = "src/main.rs"
 
 [dependencies]
-bezant-core = { path = "../bezant-core", version = "0.2.0" }
-bezant-api = { path = "../bezant-api", version = "0.2.0" }
+bezant-core = { path = "../bezant-core", version = "0.3.0" }
+bezant-api = { path = "../bezant-api", version = "0.3.0" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }

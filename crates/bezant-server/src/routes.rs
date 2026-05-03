@@ -514,7 +514,7 @@ async fn probe_step(
     let result = match tokio::time::timeout(std::time::Duration::from_secs(5), builder.send()).await
     {
         Ok(send_result) => send_result.map_err(|e| e.to_string()),
-        Err(_) => Err(format!("step timed out after 5s")),
+        Err(_) => Err("step timed out after 5s".to_string()),
     };
     let latency_ms = started.elapsed().as_millis() as u64;
 
