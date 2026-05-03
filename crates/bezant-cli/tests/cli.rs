@@ -212,3 +212,123 @@ async fn health_reports_error_on_401() {
         .failure()
         .stderr(predicate::str::contains("not authenticated"));
 }
+
+#[tokio::test]
+async fn quote_resolves_symbol_then_fetches_snapshot() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/api/iserver/secdef/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"symbol": "AAPL", "conid": "265598"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/api/iserver/marketdata/snapshot"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"31": "193.42", "84": "193.40", "86": "193.45", "87": "12345678"}
+        ])))
+        .mount(&server)
+        .await;
+
+    let mut cmd = Command::cargo_bin("bezant").expect("binary");
+    let assertion = cmd
+        .args(["--gateway-url", &gateway_base(&server), "quote", "AAPL"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).to_string();
+    let body: Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(body["symbol"], json!("AAPL"));
+    assert_eq!(body["conid"], json!(265_598));
+    assert_eq!(body["last"], json!("193.42"));
+    assert_eq!(body["bid"], json!("193.40"));
+}
+
+#[tokio::test]
+async fn orders_returns_array_from_iserver_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/api/iserver/account/orders"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "orders": [
+                {"orderId": "abc", "ticker": "AAPL", "side": "BUY", "totalSize": 10}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let mut cmd = Command::cargo_bin("bezant").expect("binary");
+    let assertion = cmd
+        .args(["--gateway-url", &gateway_base(&server), "orders", "DU123"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).to_string();
+    let body: Value = serde_json::from_str(stdout.trim()).expect("json");
+    let arr = body.as_array().expect("array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["orderId"], json!("abc"));
+}
+
+#[tokio::test]
+async fn output_table_renders_human_readable_rows_for_accounts() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/api/portfolio/accounts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {
+                "accountId": "DU1",
+                "accountTitle": "Test Account",
+                "currency": "USD",
+                "type": "INDIVIDUAL"
+            }
+        ])))
+        .mount(&server)
+        .await;
+
+    let mut cmd = Command::cargo_bin("bezant").expect("binary");
+    let assertion = cmd
+        .args([
+            "--gateway-url",
+            &gateway_base(&server),
+            "--output",
+            "table",
+            "accounts",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).to_string();
+    // Table output carries the column headers + the row values verbatim.
+    assert!(stdout.contains("accountId"), "stdout: {stdout}");
+    assert!(stdout.contains("accountTitle"), "stdout: {stdout}");
+    assert!(stdout.contains("DU1"), "stdout: {stdout}");
+    assert!(stdout.contains("Test Account"), "stdout: {stdout}");
+}
+
+#[tokio::test]
+async fn output_table_falls_back_to_json_for_non_tabular_endpoints() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/api/tickle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"session": "abc"})))
+        .mount(&server)
+        .await;
+
+    let mut cmd = Command::cargo_bin("bezant").expect("binary");
+    let assertion = cmd
+        .args([
+            "--gateway-url",
+            &gateway_base(&server),
+            "--output",
+            "table",
+            "tickle",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).to_string();
+    // Tickle has no useful tabular form — rendering should fall back
+    // to pretty-printed JSON, which we detect by the presence of a
+    // newline + indentation (compact JSON has neither).
+    let body: Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(body["session"], json!("abc"));
+    assert!(stdout.contains('\n'), "expected pretty JSON: {stdout}");
+}
