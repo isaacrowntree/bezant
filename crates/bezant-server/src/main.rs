@@ -14,23 +14,36 @@
 //!
 //! ## Endpoints
 //!
-//! | Method | Path                                  | What it returns                  |
-//! |--------|---------------------------------------|----------------------------------|
-//! | GET    | `/health`                             | Gateway auth + session status    |
-//! | GET    | `/accounts`                           | Account list (`GET /portfolio/accounts`) |
-//! | GET    | `/accounts/:account_id/summary`       | Account summary                  |
-//! | GET    | `/accounts/:account_id/positions`     | Current positions (paginated)    |
+//! | Method        | Path                                       | What it returns                                  |
+//! |---------------|--------------------------------------------|--------------------------------------------------|
+//! | GET           | `/health`                                  | Gateway auth + session status (typed)            |
+//! | GET           | `/accounts`                                | Account list (`GET /portfolio/accounts`)         |
+//! | GET           | `/accounts/{id}/summary`                   | Account summary                                  |
+//! | GET           | `/accounts/{id}/positions?page=N`          | Current positions (paginated)                    |
+//! | GET           | `/accounts/{id}/ledger`                    | Cash ledger by currency                          |
+//! | GET / POST    | `/accounts/{id}/orders`                    | List live orders / submit new orders             |
+//! | DELETE        | `/accounts/{id}/orders/{order_id}`         | Cancel a live order                              |
+//! | GET           | `/contracts/search?symbol=…&secType=STK`   | Symbol → conid resolution                        |
+//! | GET           | `/market/snapshot?conids=…&fields=…`       | Real-time market data snapshot                   |
+//! | GET           | `/debug/jar` (token-gated)                 | Cookie names + lengths in the shared jar         |
+//! | GET           | `/debug/probe` (token-gated)               | Walks `auth/status` → `accounts` for diagnosis   |
+//! | *fallback*    | any other path                             | Verbatim passthrough to the Gateway (with cookie + Origin/Referer fixups). Drives the interactive `/sso/Login` flow. |
 //!
-//! More endpoints will come in v0.2. Raw CPAPI access is always available
-//! via the library crate for apps willing to link Rust.
+//! Debug endpoints are off by default — enable with `BEZANT_DEBUG_TOKEN`
+//! and authenticate via `?token=…` query or `X-Bezant-Debug-Token` header.
+//! Raw CPAPI access is always available via the library crate for apps
+//! willing to link Rust.
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use anyhow::Context;
+use axum::http::{Request, StatusCode};
 use clap::Parser;
-use tower_http::trace::TraceLayer;
-use tracing::info;
+use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::timeout::TimeoutLayer;
+use tower_http::trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer};
+use tracing::{info, info_span, Level};
 
 use bezant_server::{router, AppState};
 
@@ -50,10 +63,18 @@ struct Args {
     #[arg(long, env = "BEZANT_KEEPALIVE_SECS", default_value_t = 60)]
     keepalive_secs: u64,
 
-    /// Reject self-signed TLS certs when talking to the Gateway. Defaults to
-    /// allowing them (the Gateway ships with a self-signed cert by default).
-    #[arg(long, env = "BEZANT_REJECT_INVALID_CERTS")]
-    reject_invalid_certs: bool,
+    /// Verify the Gateway's TLS certificate. Defaults to **off** because
+    /// the Gateway ships with a self-signed cert; set
+    /// `BEZANT_VERIFY_TLS=true` once you've installed a trusted cert.
+    ///
+    /// `false`/unset → accept any cert (suitable for local Docker setups).
+    /// `true` → reject self-signed and otherwise-invalid certs.
+    ///
+    /// Replaces the old `--reject-invalid-certs` flag, whose double
+    /// negative made it easy to accidentally leave invalid-cert
+    /// acceptance on in production.
+    #[arg(long, env = "BEZANT_VERIFY_TLS", default_value_t = false)]
+    verify_tls: bool,
 
     /// Enable the diagnostic `/debug/*` endpoints, gated by this token.
     /// Callers must present the same token via `?token=…` query string
@@ -86,7 +107,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let client = bezant::Client::builder(&args.gateway_url)
-        .accept_invalid_certs(!args.reject_invalid_certs)
+        .accept_invalid_certs(!args.verify_tls)
         // bezant-server acts as a reverse proxy: 3xx responses from the
         // Gateway must reach the browser as 3xx so it can follow the
         // Location header itself — otherwise redirected HTML arrives at
@@ -105,7 +126,39 @@ async fn main() -> anyhow::Result<()> {
         }
         None => AppState::new(client),
     };
-    let app = router(state).layer(TraceLayer::new_for_http());
+    // Build the production middleware stack here so the integration tests
+    // (which call `router(state)` directly) get the same proxy semantics
+    // and the layers stay in lockstep with the binary.
+    //
+    // * `TimeoutLayer(35s)` bounds inbound request lifetime — slightly
+    //   above reqwest's 30s upstream timeout so an upstream call that
+    //   times out surfaces as a typed error, not a silent layer kill.
+    // * `RequestBodyLimitLayer(10MiB)` is the declarative replacement for
+    //   the inline cap in `passthrough_any`; also applies to JSON-extractor
+    //   handlers that otherwise inherit axum's default 2 MiB only.
+    // * `TraceLayer` uses a custom `MakeSpan` that records *path* not
+    //   *uri*: the URI carries `?token=…` for `/debug/*` calls and we
+    //   don't want it in span fields / log shippers.
+    let trace = TraceLayer::new_for_http()
+        .make_span_with(|req: &Request<_>| {
+            // Path-only — never the query string (which can carry the
+            // debug token).
+            info_span!(
+                "http",
+                method = %req.method(),
+                path = %req.uri().path(),
+            )
+        })
+        .on_request(DefaultOnRequest::new().level(Level::DEBUG))
+        .on_response(DefaultOnResponse::new().level(Level::DEBUG));
+
+    let app = router(state)
+        .layer(trace)
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::GATEWAY_TIMEOUT,
+            Duration::from_secs(35),
+        ))
+        .layer(RequestBodyLimitLayer::new(10 * 1024 * 1024));
 
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await

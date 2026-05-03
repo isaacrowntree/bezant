@@ -21,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
         .build()?;
     let client = IbRestApiClient::with_client("https://localhost:5000/v1/api", http)?;
 
-    // All 155 CPAPI endpoints are available as typed async methods.
+    // All 154 CPAPI endpoints are available as typed async methods.
     let accounts = client
         .get_all_accounts(GetAllAccountsRequest::default())
         .await?;

@@ -12,13 +12,13 @@
 
 ---
 
-Bezant turns IBKR's 155-endpoint CPAPI into **five ergonomic surfaces** that all
+Bezant turns IBKR's 154-endpoint CPAPI into **five ergonomic surfaces** that all
 ship from the same vendored OpenAPI 3.1 spec:
 
 | Crate / package | Purpose |
 |---|---|
 | [`bezant`](crates/bezant-core) | Ergonomic async Rust facade — `Client`, keepalive, health, WebSocket streaming, pagination, symbol cache, typed errors |
-| [`bezant-api`](crates/bezant-api) | Auto-generated Rust client covering **155 paths / 167 methods / 1030 types** |
+| [`bezant-api`](crates/bezant-api) | Auto-generated Rust client covering **154 paths / 167 methods / 1030 types** |
 | [`bezant-server`](crates/bezant-server) | HTTP sidecar — exposes CPAPI as plain REST+JSON so any language can consume it |
 | [`bezant-cli`](crates/bezant-cli) | `bezant` CLI — `bezant health`, `bezant positions DU123456`, `bezant conid AAPL`, etc. |
 | [`bezant-mcp`](crates/bezant-mcp) | Model Context Protocol server — exposes IBKR as MCP tools for Claude / Cursor / Continue |
@@ -82,8 +82,9 @@ async fn main() -> bezant::Result<()> {
   Documented in detail at [Spec normalisation](https://isaacrowntree.github.io/bezant/internals/normalisation.html).
 - **Snapshot tests** driven by real IBKR example payloads — catches
   upstream spec drift before our users do.
-- **34 tests** across the workspace, all green in CI (unit, integration,
-  snapshot, end-to-end against wiremock-mocked gateways).
+- **~100 tests** across the workspace (97 at last count), all green
+  in CI: unit, integration, snapshot, and end-to-end against
+  wiremock-mocked gateways.
 - **Dual MIT / Apache-2.0** licensing following the Rust ecosystem convention.
 
 ## Production deployment: Cloudflare Zero Trust + Pi

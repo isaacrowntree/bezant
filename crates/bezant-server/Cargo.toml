@@ -11,6 +11,7 @@ description = "HTTP sidecar exposing the bezant IBKR CPAPI client over REST"
 keywords = ["ibkr", "interactive-brokers", "trading", "http", "sidecar"]
 categories = ["command-line-utilities", "finance"]
 readme = "README.md"
+documentation = "https://docs.rs/bezant-server"
 
 [lib]
 name = "bezant_server"
@@ -29,18 +30,20 @@ rustdoc-args = ["--cfg", "docsrs"]
 targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
-bezant-core = { path = "../bezant-core", version = "0.1.0" }
-bezant-api = { path = "../bezant-api", version = "0.1.0" }
+bezant-core = { path = "../bezant-core", version = "0.2.0" }
+bezant-api = { path = "../bezant-api", version = "0.2.0" }
 
 anyhow = "1"
 axum = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
+futures-util = { version = "0.3", default-features = false }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tower-http = { version = "0.6", features = ["trace", "cors"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "timeout", "limit"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 url = { workspace = true }

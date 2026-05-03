@@ -11,6 +11,7 @@ description = "Model Context Protocol server exposing the IBKR CPAPI as MCP tool
 keywords = ["ibkr", "interactive-brokers", "mcp", "claude", "llm"]
 categories = ["command-line-utilities", "finance"]
 readme = "README.md"
+documentation = "https://docs.rs/bezant-mcp"
 
 [lib]
 name = "bezant_mcp"
@@ -29,8 +30,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
-bezant-core = { path = "../bezant-core", version = "0.1.0" }
-bezant-api = { path = "../bezant-api", version = "0.1.0" }
+bezant-core = { path = "../bezant-core", version = "0.2.0" }
+bezant-api = { path = "../bezant-api", version = "0.2.0" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }

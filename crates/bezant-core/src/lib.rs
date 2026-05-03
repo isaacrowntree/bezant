@@ -12,7 +12,7 @@
 //! - [`Client::health`] — one call that returns [`Error::NotAuthenticated`]
 //!   or [`Error::NoSession`] instead of an opaque HTTP status.
 //!
-//! For raw access to every one of the ~155 CPAPI endpoints, use the
+//! For raw access to every one of the ~154 CPAPI endpoints, use the
 //! underlying [`bezant-api`] crate directly. The two are fully interoperable
 //! — [`Client::api`] hands you the generated client.
 //!

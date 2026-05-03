@@ -16,7 +16,7 @@ cargo test --workspace
 
 You'll need:
 
-- **Rust** 1.82+ (install via [rustup](https://rustup.rs/))
+- **Rust** 1.89+ (install via [rustup](https://rustup.rs/))
 - **Python 3.9+** (for the spec normaliser)
 - **Java 17+** (for the TypeScript codegen via `openapi-generator-cli`)
 - **`oas3-gen`** — `cargo install oas3-gen`

@@ -5,7 +5,7 @@
 End-to-end rebalancing-bot use case.
 
 - [x] Vendor + normalise IBKR OpenAPI spec (`bezant-spec`)
-- [x] Codegen all ~155 CPAPI endpoints via oas3-gen (`bezant-api`)
+- [x] Codegen all ~154 CPAPI endpoints via oas3-gen (`bezant-api`)
 - [x] Ergonomic facade: Client, auth, keepalive, health (`bezant`)
 - [x] HTTP sidecar exposing the facade over REST (`bezant-server`)
 - [x] Docker image bundling IBKR Gateway + bezant-server

@@ -91,3 +91,43 @@ jobs:
         run: |
           npm install
           npm run build
+
+  # Catches broken intra-doc links + bad rustdoc syntax pre-merge so a
+  # docs-build regression doesn't land on main.
+  docs:
+    name: doc build
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          cargo doc --workspace --no-deps \
+            -p bezant-core -p bezant-server -p bezant-cli \
+            -p bezant-mcp -p bezant-spec
+
+  # Smoke-test that each crate would `cargo publish` cleanly. Catches
+  # missing LICENSE files in the per-crate dir, missing README, broken
+  # `[package.metadata]`, etc — would otherwise only surface as a real
+  # publish failure.
+  publish-dry-run:
+    name: cargo publish --dry-run
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          set -euo pipefail
+          # Order matters: bezant-spec → bezant-api → bezant-core →
+          # bezant-server / bezant-cli / bezant-mcp. cargo publish
+          # --dry-run still resolves path deps, so this respects the
+          # graph automatically.
+          for c in bezant-spec bezant-api bezant-core bezant-server bezant-cli bezant-mcp; do
+            echo "::group::$c"
+            cargo publish -p "$c" --dry-run --allow-dirty --no-verify
+            echo "::endgroup::"
+          done

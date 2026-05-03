@@ -159,19 +159,14 @@ async fn passthrough_any(
     if injected > 0 {
         jar.set_pairs(&pairs);
     }
-    // INFO during the Railway-deploy diagnostic phase so we can
-    // see browser ↔ jar interaction in the deploy log without
-    // reaching for a debug endpoint. Demote back to DEBUG once the
-    // session-bridging story is settled.
-    if injected > 0 {
-        tracing::info!(
-            path = %path_only,
-            cookies = injected,
-            "passthrough cookie replay"
-        );
-    } else {
-        tracing::debug!(path = %path_only, "passthrough no browser cookies");
-    }
+    // The Railway-deploy diagnostic phase is over (the residential-Pi
+    // pattern is settled). Cookie replay is a per-request event and
+    // belongs at debug level — no need to fan it out to log shippers.
+    tracing::debug!(
+        path = %path_only,
+        cookies = injected,
+        "passthrough cookie replay"
+    );
 
     let body_bytes = axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024)
         .await
@@ -524,9 +519,21 @@ async fn probe_step(
                 })
                 .filter(|s| !s.is_empty())
                 .collect();
-            let bytes = resp.bytes().await.unwrap_or_default();
+            // Cap the upstream read at 1 MiB so a misbehaving Gateway
+            // can't OOM the probe with an unbounded body. Probe targets
+            // are JSON status payloads — any response over 1 MiB is
+            // already broken, the cap just bounds the damage.
+            let bytes = read_capped(resp, 1024 * 1024).await.unwrap_or_default();
             let preview_len = bytes.len().min(512);
             let body_preview = String::from_utf8_lossy(&bytes[..preview_len]).into_owned();
+            // Parse the FULL body (not the truncated preview) for
+            // discriminator fields the verdict logic needs. Doing it
+            // here means `compute_verdict` can't be misled by a
+            // response whose `authenticated` field happens to land
+            // past the 512-byte preview window.
+            let parsed_authenticated = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| v["authenticated"].as_bool());
             serde_json::json!({
                 "name": name,
                 "method": method.as_str(),
@@ -537,6 +544,7 @@ async fn probe_step(
                 "body_preview": body_preview,
                 "set_cookie_names": set_cookie_names,
                 "error": serde_json::Value::Null,
+                "_authenticated": parsed_authenticated,
             })
         }
         Err(e) => serde_json::json!({
@@ -603,18 +611,16 @@ fn is_2xx_or_skipped(step: &serde_json::Value) -> bool {
     is_2xx(step) || step["skipped"].as_bool().unwrap_or(false)
 }
 
-/// Parse the auth_status body preview to decide whether the session is
-/// already bridged. Used both for the verdict (200 + authenticated:true
-/// = success) and for the "should we skip ssodh_init?" decision.
+/// Decide whether the session is already bridged. Reads the
+/// `_authenticated` discriminator that `probe_step` extracted from the
+/// FULL response body (not the 512-byte preview), so an `authenticated`
+/// field that lands past the preview window doesn't silently flip the
+/// verdict to "needs_login" and trigger the destructive ssodh path.
 fn is_authenticated(step: &serde_json::Value) -> bool {
     if !is_2xx(step) {
         return false;
     }
-    let body = step["body_preview"].as_str().unwrap_or("");
-    serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| v["authenticated"].as_bool())
-        .unwrap_or(false)
+    step["_authenticated"].as_bool().unwrap_or(false)
 }
 
 /// Build a placeholder step entry for a step the probe deliberately
@@ -878,14 +884,22 @@ async fn passthrough_get(
 ///
 /// `Origin` and `Referer` on the *request* side are deliberately
 /// forwarded verbatim — see `passthrough_any`.
+/// Maximum upstream response body the proxy will buffer. CPAPI
+/// payloads are JSON status / position / order objects — anything
+/// over a few hundred KB is already malformed. Cap at 25 MiB so a
+/// hostile or buggy upstream sending unbounded chunks can't OOM the
+/// proxy. (Inbound side has the matching 10 MiB limit via
+/// `RequestBodyLimitLayer`.)
+const MAX_UPSTREAM_BODY_BYTES: usize = 25 * 1024 * 1024;
+
 async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
     let status = resp.status();
     let headers_src = resp.headers().clone();
     let body_must_be_empty =
         matches!(status.as_u16(), 100..=199 | 204 | 304) || status.is_redirection();
 
-    let bytes: Vec<u8> = match resp.bytes().await {
-        Ok(b) => b.to_vec(),
+    let bytes: Vec<u8> = match read_capped(resp, MAX_UPSTREAM_BODY_BYTES).await {
+        Ok(b) => b,
         Err(e) if body_must_be_empty => {
             // Reqwest sometimes errors finalising chunked-encoded
             // empty bodies on 3xx/204/304; the headers we care about
@@ -898,7 +912,7 @@ async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
             );
             Vec::new()
         }
-        Err(e) => return Err(bezant::Error::Http(e).into()),
+        Err(e) => return Err(bezant::Error::other(format!("upstream body: {e}")).into()),
     };
 
     let body_is_empty = bytes.is_empty();
@@ -1012,16 +1026,74 @@ fn rewrite_referer_origin(original: &str, new_origin: &str) -> String {
     }
 }
 
-/// Recognise cookies set by an edge-proxy (Cloudflare Access today;
-/// could be extended for other Zero-Trust style fronts) so we don't
-/// replay them into bezant-server's shared jar — they're for the
-/// proxy's own session and confuse upstream CPAPI/Akamai.
+/// Recognise cookies set by an edge-proxy / Zero-Trust front so we
+/// don't replay them into bezant-server's shared jar — they're for
+/// the proxy's own session and confuse upstream CPAPI/Akamai.
 ///
-/// `CF_Authorization` is the Cloudflare Access JWT cookie; `CF_AppSession`
-/// is the Access session/state cookie. Both are present whenever a user
-/// reaches a Zero-Trust-protected hostname through a browser.
+/// Built-in matches cover the common managed Zero-Trust providers:
+/// * **Cloudflare Access** — `CF_Authorization` (JWT), `CF_AppSession`
+/// * **AWS ALB OIDC** — `AWSELBAuthSessionCookie-*` (split across
+///   multiple cookies on long sessions)
+/// * **OAuth2 Proxy** — `_oauth2_proxy*`
+/// * **Vercel Authentication** — `_vercel_jwt`, `_vercel_sso_nonce`
+/// * **Pomerium** — `_pomerium*`
+///
+/// For deployments behind a custom edge, set `BEZANT_EDGE_COOKIE_PREFIXES`
+/// to a comma-separated list of additional prefixes — e.g.
+/// `BEZANT_EDGE_COOKIE_PREFIXES=MyEdge_,_internal_` — and any cookie
+/// whose name starts with one of those is dropped at the boundary.
 fn is_edge_auth_cookie(name: &str) -> bool {
-    matches!(name, "CF_Authorization" | "CF_AppSession")
+    const BUILTIN_PREFIXES: &[&str] = &[
+        "CF_Authorization",
+        "CF_AppSession",
+        "AWSELBAuthSessionCookie",
+        "_oauth2_proxy",
+        "_vercel_jwt",
+        "_vercel_sso_nonce",
+        "_pomerium",
+    ];
+    if BUILTIN_PREFIXES
+        .iter()
+        .any(|p| name.eq_ignore_ascii_case(p) || name.starts_with(p))
+    {
+        return true;
+    }
+    // Lazy env lookup: keeps the helper cheap for the no-config case.
+    if let Ok(extra) = std::env::var("BEZANT_EDGE_COOKIE_PREFIXES") {
+        for prefix in extra.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            if name.starts_with(prefix) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Stream an upstream response body into a `Vec<u8>` while enforcing a
+/// hard byte cap. Stops as soon as the cap is exceeded so a hostile
+/// upstream sending unbounded chunks can't OOM the proxy. Returns the
+/// fully buffered bytes on success, or an error if the cap is hit or
+/// the upstream connection breaks. Used by both `forward()` (for
+/// passthrough responses, large cap) and `probe_step` (smaller cap,
+/// for diagnostic JSON).
+async fn read_capped(
+    resp: reqwest::Response,
+    max: usize,
+) -> std::result::Result<Vec<u8>, String> {
+    use futures_util::StreamExt;
+    let mut bytes = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("read chunk: {e}"))?;
+        if bytes.len() + chunk.len() > max {
+            return Err(format!(
+                "upstream body exceeded {max} byte cap (>{}B)",
+                bytes.len() + chunk.len()
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 /// Strip any `Domain=...` attribute from a Set-Cookie value. The browser

@@ -11,6 +11,18 @@ description = "Vendored IBKR Client Portal Web API OpenAPI 3.0 specification"
 keywords = ["ibkr", "interactive-brokers", "openapi", "spec"]
 categories = ["api-bindings", "finance"]
 readme = "README.md"
+documentation = "https://docs.rs/bezant-spec"
+# Two normalised JSON specs (~1.3MB each) ship with this crate. Be
+# explicit about what enters the tarball so future repo additions
+# (refresh script outputs, intermediate fixtures) don't bloat it.
+include = [
+    "src/**",
+    "ibkr-openapi.json",
+    "ibkr-openapi-3.1.json",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
 
 [lib]
 name = "bezant_spec"

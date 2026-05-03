@@ -11,6 +11,7 @@ description = "Command-line tool for the IBKR Client Portal Web API (Bezant)"
 keywords = ["ibkr", "interactive-brokers", "trading", "cli", "finance"]
 categories = ["command-line-utilities", "finance"]
 readme = "README.md"
+documentation = "https://docs.rs/bezant-cli"
 
 [lints]
 workspace = true
@@ -20,8 +21,8 @@ name = "bezant"
 path = "src/main.rs"
 
 [dependencies]
-bezant-core = { path = "../bezant-core", version = "0.1.0" }
-bezant-api = { path = "../bezant-api", version = "0.1.0" }
+bezant-core = { path = "../bezant-core", version = "0.2.0" }
+bezant-api = { path = "../bezant-api", version = "0.2.0" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }

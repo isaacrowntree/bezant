@@ -4,7 +4,7 @@
 > Rust-first, with HTTP / CLI / MCP / TypeScript surfaces generated from the
 > same vendored OpenAPI spec.
 
-Bezant turns IBKR's 155-endpoint CPAPI into:
+Bezant turns IBKR's 154-endpoint CPAPI into:
 
 | Surface | What it's for |
 |---|---|

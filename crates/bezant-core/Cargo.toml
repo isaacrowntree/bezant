@@ -11,6 +11,7 @@ description = "Ergonomic facade over bezant-api: session keepalive, pagination, 
 keywords = ["ibkr", "interactive-brokers", "trading", "finance", "api"]
 categories = ["api-bindings", "finance"]
 readme = "README.md"
+documentation = "https://docs.rs/bezant-core"
 
 [lib]
 name = "bezant"
@@ -29,7 +30,11 @@ rustdoc-args = ["--cfg", "docsrs"]
 targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
-bezant-api = { path = "../bezant-api", version = "0.1.0" }
+bezant-api = { path = "../bezant-api", version = "0.2.0" }
+# `bezant-api`'s generated client returns `anyhow::Result<T>` from every
+# typed call. To keep `?` ergonomic across `auth.rs` / `helpers.rs` we
+# accept anyhow as a required dep. Future: redrive helpers off
+# `bezant_api`'s `Result` shape directly so anyhow can move to optional.
 anyhow = "1"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 reqwest = { workspace = true }

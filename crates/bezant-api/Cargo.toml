@@ -11,10 +11,19 @@ description = "Auto-generated Rust client for the IBKR Client Portal Web API"
 keywords = ["ibkr", "interactive-brokers", "trading", "finance", "openapi"]
 categories = ["api-bindings", "finance"]
 readme = "README.md"
+documentation = "https://docs.rs/bezant-api"
 
 [lib]
 name = "bezant_api"
 path = "src/lib.rs"
+
+# Generated code uses patterns clippy flags noisily (`large_enum_variant`,
+# `too_many_arguments`, etc.). Lints are intentionally permissive here so
+# regenerating the client doesn't break CI.
+[lints.rust]
+unsafe_code = "forbid"
+[lints.clippy]
+all = "allow"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -22,7 +31,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
-bezant-spec = { path = "../bezant-spec", version = "0.1.0" }
+bezant-spec = { path = "../bezant-spec", version = "0.2.0" }
 
 # Runtime dependencies the generated client expects.
 anyhow = "1"

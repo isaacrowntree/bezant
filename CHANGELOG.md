@@ -7,49 +7,109 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-03
+
+This release hardens the production deploy story: a residential-Pi +
+Cloudflare Zero Trust + WARP pattern that bypasses IBKR's Akamai
+datacenter-IP rejection. See the new "Production deployment" section
+in the README.
+
+### Added
+- **`/debug/probe`** diagnostic endpoint walks
+  `auth/status` → `ssodh/init` → `tickle` → `portfolio/accounts`
+  against the Gateway and pins the first diverging step in a top-level
+  `verdict` (`ok`, `auth_status_failed`, `needs_login`, `ssodh_failed`,
+  `tickle_failed`, `accounts_failed`). Skips `ssodh_init` when the
+  session is already bridged so the probe is non-destructive.
+- **`/debug/jar`** lists shared cookie-jar entries by name + value
+  length (never raw values).
+- **`BEZANT_DEBUG_TOKEN`** env var gates both `/debug/*` endpoints.
+  Off → 404; on → callers must present the token via
+  `X-Bezant-Debug-Token` header or `?token=…` query string.
+  Constant-time comparison against the configured token.
+- **`BEZANT_VERIFY_TLS`** flips on Gateway TLS cert verification
+  (defaults to off because the Gateway ships with a self-signed
+  cert). Replaces the double-negative `BEZANT_REJECT_INVALID_CERTS`
+  whose env-var bool parsing was a footgun.
+- **`BEZANT_EDGE_COOKIE_PREFIXES`** allows extending the built-in
+  edge-cookie filter (Cloudflare Access, AWS ALB OIDC, OAuth2 Proxy,
+  Vercel, Pomerium) with custom prefixes for bespoke Zero-Trust fronts.
+- Per-arch native Docker builds (`ubuntu-24.04-arm` for arm64) cut
+  multi-arch image build time from ~20min to ~5min by skipping
+  QEMU emulation. Manifests stitched in a merge job.
+
 ### Changed
 - `bezant-server` proxy now strips the full RFC 7230 §6.1 hop-by-hop
-  header set (`connection`, `keep-alive`, `te`, `trailer`,
-  `transfer-encoding`, `upgrade`, `proxy-authenticate`,
-  `proxy-authorization`) on both request and response sides; previously
-  only `connection`, `content-length`, and `transfer-encoding` were
-  removed.
+  header set on both request and response sides, plus `authorization`
+  and `x-forwarded-*` / `forwarded` / `x-real-ip` (caller-controlled
+  client-IP claims that CPGateway doesn't consume).
+- Cloudflare Access cookies (`CF_Authorization`, `CF_AppSession`) are
+  filtered out of inbound cookie replay so they never reach IBKR
+  upstream — Akamai 401s the SSODH bridge call when it sees an
+  unrecognised cookie alongside the IBKR session cookies. Generalised
+  to a built-in prefix list covering the major Zero-Trust providers.
+- `passthrough_any`'s upstream body read is now capped at 25 MiB via a
+  streaming counter (was unbounded; OOM risk under a hostile upstream).
+  Inbound side is capped at 10 MiB declaratively via
+  `RequestBodyLimitLayer`.
+- `bezant-server` main.rs now stacks production middleware:
+  `TimeoutLayer(35s)` (>reqwest's 30s), `RequestBodyLimitLayer(10MiB)`,
+  and a privacy-preserving `TraceLayer` whose spans record the request
+  *path* never *uri* (to avoid logging `?token=…` query strings).
 - `forward()`'s empty-body fallback for upstream chunked-decode errors
-  is now scoped to 1xx/204/304/3xx responses; on 2xx/4xx/5xx a real
-  decode failure surfaces as an `upstream_http_error` instead of
-  silently returning an empty body.
-- Content-Type rewrite (`application/octet-stream` → `text/html`) and
-  the missing-Content-Type default no longer fire on responses where
-  the body must be empty (1xx/204/304/3xx) per RFC 9110 §8.3, nor on
-  responses with an empty body even at 2xx/4xx/5xx.
-- Cookie-injection log demoted from `info!` to `debug!` and the path's
-  query string is stripped from the log line so SSO tokens don't fan
-  out to log shippers.
+  is scoped to 1xx/204/304/3xx; on 2xx/4xx/5xx a decode failure
+  surfaces as a real upstream error.
+- Content-Type rewrite + missing-Content-Type default no longer fire on
+  responses where the body must be empty (RFC 9110 §8.3) nor on empty-
+  body 2xx/4xx/5xx responses.
+- Cookie-injection log demoted from `info!` to `debug!`; path query
+  string stripped from log lines.
 - `bezant-core` adds `Error::BadRequest(String)` for caller-input
-  failures (malformed URLs, unparseable methods, oversize bodies);
-  `bezant-server` maps it to HTTP 400 instead of bucketing it under
-  `Error::Other` → 500.
+  failures; `bezant-server` maps it to HTTP 400 instead of 500.
 - `Error::Decode` carried by `auth_status` now includes the offending
   URL and HTTP status alongside the serde error.
+- Probe verdict logic now reads the **full** auth_status body (not the
+  512-byte preview) to decide `_authenticated`, so a response whose
+  `authenticated` field lands past the preview window doesn't silently
+  trigger the destructive ssodh path.
+- Cargo packaging metadata: `documentation` key on every published
+  crate, per-crate `LICENSE-MIT`/`LICENSE-APACHE` files (cargo
+  publish only includes per-crate dirs), `[lints] workspace = true`
+  on every member, `include` directive on `bezant-spec` to control
+  package size.
 
 ### Fixed
 - `forward()`'s `had_content_type` flag was set before the response
-  header was actually appended; if `HeaderValue::from_bytes` rejected
-  the upstream value the response went out with neither the original
-  Content-Type nor the default, breaking content rendering.
+  header was appended; if `HeaderValue::from_bytes` rejected the
+  upstream value the response went out with no Content-Type at all.
 - Multiple `Set-Cookie` headers from the Gateway now round-trip
-  reliably (covered by `forward_preserves_multiple_set_cookie_headers`).
+  reliably.
 - `forward()` no longer relies on `(StatusCode, HeaderMap, Vec<u8>)`'s
-  `IntoResponse` adapter, which was unconditionally inserting
-  `application/octet-stream` and defeating the "no Content-Type on
-  204" branch.
+  `IntoResponse` adapter, which unconditionally inserted
+  `application/octet-stream`.
+
+### Security
+- **HIGH:** `/debug/jar` no longer returns raw cookie values
+  unauthenticated. The cookie jar holds live IBKR session cookies; an
+  attacker reaching the bind address could resume the IBKR session
+  and trade the account. Now name + value-length only, gated by
+  `BEZANT_DEBUG_TOKEN`.
+- **MEDIUM:** Bearer/Basic `Authorization` headers no longer forwarded
+  to CPGateway. CPGateway doesn't consume them; forwarding lets a
+  caller probe whatever auth scheme upstream might (incorrectly)
+  honour.
+- **MEDIUM:** Caller-controlled `X-Forwarded-For` / `Forwarded` /
+  `X-Real-IP` no longer forwarded — caller could spoof their apparent
+  source IP to anything that audits on those headers downstream.
 
 ### Tests
-- 8 new wiremock-driven integration tests in
+- 38 wiremock-driven integration tests in
   `crates/bezant-server/tests/routes.rs` covering the regressions
-  above plus multi-cookie replay, hop-by-hop request strip, upstream
-  5xx propagation, and Content-Type-on-204 RFC compliance. Total: 23
-  proxy-flow tests, all running in <50 ms with no IBKR involvement.
+  above plus probe verdict matrix, debug-token gating
+  (404/401/header/query/length-only), Cloudflare-cookie filtering,
+  multi-cookie replay, hop-by-hop strip, 5xx propagation, and
+  Content-Type-on-204 RFC compliance. All wiremock-driven, no
+  IBKR involvement.
 
 ## [0.1.0] — 2026-04-22
 

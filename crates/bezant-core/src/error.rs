@@ -64,9 +64,11 @@ impl Error {
     }
 }
 
-// `anyhow::Error` keeps this conversion convenient for internal callers
-// without leaking the anyhow type through the `Error` enum itself —
-// downstream crates match on `Error::Api` and see a plain boxed error.
+// `bezant-api`'s generated client returns `anyhow::Result<T>` from every
+// typed call, so this `From` impl is load-bearing for `?` propagation
+// in `auth.rs` / `helpers.rs`. Tracked for future cleanup: redrive
+// helpers off the generated client's Result shape directly so anyhow
+// can be made optional without breaking internal `?`.
 impl From<anyhow::Error> for Error {
     fn from(e: anyhow::Error) -> Self {
         Error::Api(e.into())
