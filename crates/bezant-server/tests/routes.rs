@@ -1048,12 +1048,7 @@ async fn passthrough_collapses_same_name_set_cookies_to_one_value() {
 // `accounts_failed`.
 
 async fn probe_body(app: axum::Router) -> Value {
-    let resp = app
-        .oneshot(
-            debug_request("/debug/probe"),
-        )
-        .await
-        .unwrap();
+    let resp = app.oneshot(debug_request("/debug/probe")).await.unwrap();
     let (status, body) = response_body(resp).await;
     assert_eq!(status, StatusCode::OK, "probe must return 200");
     body
@@ -1075,7 +1070,10 @@ fn authed_status_response() -> ResponseTemplate {
 #[tokio::test]
 async fn probe_happy_path_returns_ok_verdict() {
     let gateway = MockServer::start().await;
-    authed_status_builder().respond_with(authed_status_response()).mount(&gateway).await;
+    authed_status_builder()
+        .respond_with(authed_status_response())
+        .mount(&gateway)
+        .await;
     Mock::given(wm_method("POST"))
         .and(wm_path("/v1/api/iserver/auth/ssodh/init"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -1291,7 +1289,10 @@ async fn probe_ssodh_failure_pins_ssodh_failed_verdict() {
 #[tokio::test]
 async fn probe_accounts_failure_pins_accounts_failed_verdict() {
     let gateway = MockServer::start().await;
-    authed_status_builder().respond_with(authed_status_response()).mount(&gateway).await;
+    authed_status_builder()
+        .respond_with(authed_status_response())
+        .mount(&gateway)
+        .await;
     Mock::given(wm_method("POST"))
         .and(wm_path("/v1/api/iserver/auth/ssodh/init"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
@@ -1437,7 +1438,10 @@ async fn debug_jar_omits_cookie_values_returns_lengths_only() {
         .oneshot(
             Request::builder()
                 .uri("/sso/Login")
-                .header("cookie", "JSESSIONID=secret-session-token-value-DO-NOT-LEAK")
+                .header(
+                    "cookie",
+                    "JSESSIONID=secret-session-token-value-DO-NOT-LEAK",
+                )
                 .body(Body::empty())
                 .unwrap(),
         )

@@ -190,12 +190,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 array_table(
                     body,
                     &[
-                        "ticker",
-                        "conid",
-                        "position",
-                        "avgCost",
-                        "mktPrice",
-                        "mktValue",
+                        "ticker", "conid", "position", "avgCost", "mktPrice", "mktValue",
                         "currency",
                     ],
                 )

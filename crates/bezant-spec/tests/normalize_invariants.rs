@@ -127,7 +127,10 @@ fn operation_ids_are_unique() {
             dupes.push(format!("{id}: {prev} <-> {here}"));
         }
     });
-    assert!(dupes.is_empty(), "duplicate operationIds — step 3 missed: {dupes:?}");
+    assert!(
+        dupes.is_empty(),
+        "duplicate operationIds — step 3 missed: {dupes:?}"
+    );
 }
 
 // Step 4: no enums whose variants collide when stripped to identifiers.
@@ -267,7 +270,10 @@ fn resolve_path_param_name(p: &Value, shared: &serde_json::Map<String, Value>) -
         let name = reference.rsplit('/').next()?;
         let target = shared.get(name)?;
         if target.get("in").and_then(Value::as_str) == Some("path") {
-            return target.get("name").and_then(Value::as_str).map(str::to_owned);
+            return target
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
         }
         return None;
     }
@@ -413,7 +419,9 @@ fn array_query_items_are_string_typed() {
             if p.get("in").and_then(Value::as_str) != Some("query") {
                 continue;
             }
-            let Some(schema) = p.get("schema") else { continue };
+            let Some(schema) = p.get("schema") else {
+                continue;
+            };
             if schema.get("type").and_then(Value::as_str) != Some("array") {
                 continue;
             }
@@ -441,7 +449,10 @@ fn array_query_items_are_string_typed() {
 #[test]
 fn integer_fields_not_paired_with_float_examples() {
     let s = spec();
-    let schemas = s["components"]["schemas"].as_object().cloned().unwrap_or_default();
+    let schemas = s["components"]["schemas"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
     walk_objects(&s, |v| {
         let Some(examples) = v.get("examples").and_then(Value::as_object) else {
             return;

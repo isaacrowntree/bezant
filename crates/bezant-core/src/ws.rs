@@ -228,12 +228,14 @@ impl WsClient {
         let cookie = format!(r#"api={{"session":"{session}"}}"#);
 
         debug!(%ws_url, "bezant: opening websocket");
-        let mut request = ws_url.as_str().into_client_request().map_err(|source| {
-            Error::WsHandshake {
-                url: ws_url.to_string(),
-                source,
-            }
-        })?;
+        let mut request =
+            ws_url
+                .as_str()
+                .into_client_request()
+                .map_err(|source| Error::WsHandshake {
+                    url: ws_url.to_string(),
+                    source,
+                })?;
         request.headers_mut().insert(
             "Cookie",
             cookie.parse().map_err(|source| Error::Header {
@@ -251,13 +253,12 @@ impl WsClient {
                 })?,
         );
 
-        let (stream, _) =
-            tokio_tungstenite::connect_async(request)
-                .await
-                .map_err(|source| Error::WsHandshake {
-                    url: ws_url.to_string(),
-                    source,
-                })?;
+        let (stream, _) = tokio_tungstenite::connect_async(request)
+            .await
+            .map_err(|source| Error::WsHandshake {
+                url: ws_url.to_string(),
+                source,
+            })?;
 
         Ok(Self { stream })
     }
@@ -391,9 +392,7 @@ impl WsClient {
                 loop {
                     match s.next().await {
                         None => return None,
-                        Some(Err(source)) => {
-                            return Some((Err(Error::WsTransport { source }), s))
-                        }
+                        Some(Err(source)) => return Some((Err(Error::WsTransport { source }), s)),
                         Some(Ok(Message::Text(t))) => {
                             return Some((Ok(classify(t.as_str())), s));
                         }
@@ -440,9 +439,9 @@ impl WsClient {
 fn ws_url_from_base(base: &Url) -> Result<Url> {
     let mut ws = base.clone();
     match ws.scheme() {
-        "https" => ws.set_scheme("wss").map_err(|()| Error::WsProtocol(
-            "failed to upgrade base URL scheme to wss".into(),
-        ))?,
+        "https" => ws
+            .set_scheme("wss")
+            .map_err(|()| Error::WsProtocol("failed to upgrade base URL scheme to wss".into()))?,
         "http" => ws
             .set_scheme("ws")
             .map_err(|()| Error::WsProtocol("failed to upgrade base URL scheme to ws".into()))?,

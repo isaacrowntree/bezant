@@ -129,13 +129,12 @@ impl Client {
                 body_preview: None,
             });
         }
-        let parsed: bezant_api::BrokerageSessionStatus = resp.json().await.map_err(|e| {
-            Error::Decode {
+        let parsed: bezant_api::BrokerageSessionStatus =
+            resp.json().await.map_err(|e| Error::Decode {
                 endpoint: format!("POST {}/iserver/auth/status", self.base_url()),
                 status: status.as_u16(),
                 message: e.to_string(),
-            }
-        })?;
+            })?;
         Ok(AuthStatus::from(parsed))
     }
 

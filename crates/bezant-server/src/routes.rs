@@ -282,10 +282,12 @@ async fn debug_jar(
     let entries: Vec<serde_json::Value> = jar
         .snapshot()
         .into_iter()
-        .map(|(name, value)| serde_json::json!({
-            "name": name,
-            "value_length": value.len(),
-        }))
+        .map(|(name, value)| {
+            serde_json::json!({
+                "name": name,
+                "value_length": value.len(),
+            })
+        })
         .collect();
     let body = serde_json::json!({
         "gateway_root": state.client().gateway_root_url().as_str(),
@@ -426,14 +428,7 @@ async fn debug_probe(
         )
         .await
     };
-    let tickle = probe_step(
-        client,
-        "tickle",
-        reqwest::Method::POST,
-        &["tickle"],
-        None,
-    )
-    .await;
+    let tickle = probe_step(client, "tickle", reqwest::Method::POST, &["tickle"], None).await;
     let accounts = probe_step(
         client,
         "accounts",
@@ -499,7 +494,10 @@ async fn probe_step(
     };
     if method != reqwest::Method::GET && method != reqwest::Method::HEAD {
         builder = builder
-            .header(reqwest::header::CONTENT_LENGTH, body_bytes.len().to_string())
+            .header(
+                reqwest::header::CONTENT_LENGTH,
+                body_bytes.len().to_string(),
+            )
             .body(body_bytes.clone());
         if !body_bytes.is_empty() {
             builder = builder.header(reqwest::header::CONTENT_TYPE, "application/json");
@@ -1170,10 +1168,7 @@ fn is_edge_auth_cookie(name: &str) -> bool {
 /// the upstream connection breaks. Used by both `forward()` (for
 /// passthrough responses, large cap) and `probe_step` (smaller cap,
 /// for diagnostic JSON).
-async fn read_capped(
-    resp: reqwest::Response,
-    max: usize,
-) -> std::result::Result<Vec<u8>, String> {
+async fn read_capped(resp: reqwest::Response, max: usize) -> std::result::Result<Vec<u8>, String> {
     use futures_util::StreamExt;
     let mut bytes = Vec::new();
     let mut stream = resp.bytes_stream();
