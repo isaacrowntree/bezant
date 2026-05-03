@@ -40,11 +40,13 @@ use std::time::Duration;
 use anyhow::Context;
 use axum::http::{HeaderName, Request, StatusCode};
 use clap::Parser;
+use tokio::signal;
+use tower::limit::ConcurrencyLimitLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer};
-use tracing::{info, info_span, Level};
+use tracing::{info, info_span, warn, Level};
 
 use bezant_server::{router, AppState};
 
@@ -117,8 +119,10 @@ async fn main() -> anyhow::Result<()> {
         .build()
         .context("building bezant client")?;
 
-    // Keepalive runs for the lifetime of the server.
-    let _keepalive = client.spawn_keepalive(Duration::from_secs(args.keepalive_secs));
+    // Keepalive runs for the lifetime of the server. Holding the
+    // handle (rather than `let _ = …`) so we can `.stop().await` it
+    // cleanly during graceful shutdown.
+    let keepalive = client.spawn_keepalive(Duration::from_secs(args.keepalive_secs));
 
     let state = match args.debug_token {
         Some(token) => {
@@ -165,6 +169,12 @@ async fn main() -> anyhow::Result<()> {
     // request if the caller didn't supply x-request-id; PropagateRequestIdLayer
     // copies the header to the response so downstream loadbalancers /
     // observability tools can stitch the trace together.
+    //
+    // ConcurrencyLimitLayer caps simultaneous handlers so a misbehaving
+    // caller can't exhaust upstream connections (and IBKR's per-account
+    // rate limits — getting locked out by hammering them is worse than
+    // back-pressuring the caller). 256 is generous for a typical bot
+    // workload; tune via fork if you need more.
     let req_id_header = HeaderName::from_static("x-request-id");
     let app = router(state)
         .layer(PropagateRequestIdLayer::new(req_id_header.clone()))
@@ -173,6 +183,7 @@ async fn main() -> anyhow::Result<()> {
             StatusCode::GATEWAY_TIMEOUT,
             Duration::from_secs(35),
         ))
+        .layer(ConcurrencyLimitLayer::new(256))
         .layer(RequestBodyLimitLayer::new(10 * 1024 * 1024))
         // SetRequestIdLayer is applied last so it runs first on the
         // request side — every other layer sees the header set.
@@ -183,9 +194,54 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("binding {}", args.bind))?;
     info!(addr = %listener.local_addr()?, "bezant-server listening");
 
+    // Graceful shutdown: SIGTERM (k8s pod stop, Railway redeploy) +
+    // SIGINT (operator Ctrl-C) trigger axum's drain. Then we
+    // explicitly await `keepalive.stop()` so the tickle task closes
+    // its connection cleanly instead of being killed mid-request.
     axum::serve(listener, app.into_make_service())
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .context("server crashed")?;
 
+    info!("server drained; stopping keepalive");
+    if let Err(e) = keepalive.stop().await {
+        warn!(error = %e, "keepalive stop returned error");
+    }
+    info!("bezant-server shutdown complete");
+
     Ok(())
+}
+
+/// Wait for SIGTERM (any platform) or Ctrl-C (any platform), whichever
+/// fires first. On non-unix targets (Windows) only Ctrl-C is wired,
+/// because SIGTERM doesn't exist there.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = signal::ctrl_c().await {
+            warn!(error = %e, "ctrl-c signal handler failed to install");
+            // Park forever rather than tight-looping on a broken signal source.
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(e) => {
+                warn!(error = %e, "SIGTERM handler failed to install");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => info!("shutdown: SIGINT received"),
+        _ = terminate => info!("shutdown: SIGTERM received"),
+    }
 }

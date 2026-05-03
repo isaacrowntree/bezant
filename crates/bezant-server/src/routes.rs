@@ -507,7 +507,15 @@ async fn probe_step(
     }
 
     let started = std::time::Instant::now();
-    let result = builder.send().await;
+    // Per-step deadline: a hung Gateway shouldn't take the whole
+    // probe with it. 5s is generous for the small JSON payloads we
+    // hit; tickle/auth_status/accounts all return in <500 ms in
+    // healthy operation.
+    let result = match tokio::time::timeout(std::time::Duration::from_secs(5), builder.send()).await
+    {
+        Ok(send_result) => send_result.map_err(|e| e.to_string()),
+        Err(_) => Err(format!("step timed out after 5s")),
+    };
     let latency_ms = started.elapsed().as_millis() as u64;
 
     match result {
@@ -532,8 +540,6 @@ async fn probe_step(
             // are JSON status payloads — any response over 1 MiB is
             // already broken, the cap just bounds the damage.
             let bytes = read_capped(resp, 1024 * 1024).await.unwrap_or_default();
-            let preview_len = bytes.len().min(512);
-            let body_preview = String::from_utf8_lossy(&bytes[..preview_len]).into_owned();
             // Parse the FULL body (not the truncated preview) for
             // discriminator fields the verdict logic needs. Doing it
             // here means `compute_verdict` can't be misled by a
@@ -542,6 +548,14 @@ async fn probe_step(
             let parsed_authenticated = serde_json::from_slice::<serde_json::Value>(&bytes)
                 .ok()
                 .and_then(|v| v["authenticated"].as_bool());
+            // Redact known token-bearing keys from the preview before
+            // exposing it to the operator — `session`, `ssoConclusion`,
+            // and any field with `token` in the name commonly carry
+            // resumable session material that shouldn't ride out via
+            // a debug endpoint or log shipper.
+            let preview_len = bytes.len().min(512);
+            let raw_preview = String::from_utf8_lossy(&bytes[..preview_len]).into_owned();
+            let body_preview = redact_tokens(&raw_preview);
             serde_json::json!({
                 "name": name,
                 "method": method.as_str(),
@@ -564,8 +578,56 @@ async fn probe_step(
             "body_bytes": 0,
             "body_preview": "",
             "set_cookie_names": [],
-            "error": e.to_string(),
+            "error": e,
         }),
+    }
+}
+
+/// Best-effort redaction of token-bearing JSON keys in a body preview.
+///
+/// Walks the JSON once, replaces values for keys named `session`,
+/// `ssoConclusion`, or anything containing `token` (case-insensitive)
+/// with `"<redacted>"`. Falls back to returning the input verbatim if
+/// the preview isn't valid JSON — this is a best-effort guard, not a
+/// security boundary.
+///
+/// Used by `/debug/probe` because preview output ships across HTTP
+/// (and into the operator's terminal / log shipper) — leaking a live
+/// session token there would let anyone with read access to the
+/// debug response resume the IBKR session.
+fn redact_tokens(preview: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(preview) else {
+        // Not JSON — return verbatim. Most non-JSON CPAPI responses
+        // are status pages or HTML error bodies that don't carry
+        // tokens.
+        return preview.to_owned();
+    };
+    redact_in_place(&mut value);
+    value.to_string()
+}
+
+fn redact_in_place(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                let lower = k.to_ascii_lowercase();
+                if lower == "session"
+                    || lower == "ssoconclusion"
+                    || lower.contains("token")
+                    || lower.contains("secret")
+                {
+                    *v = serde_json::Value::String("<redacted>".to_owned());
+                } else {
+                    redact_in_place(v);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                redact_in_place(v);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1138,6 +1200,48 @@ fn strip_cookie_domain(value: &str) -> String {
         .filter(|part| !part.trim().to_ascii_lowercase().starts_with("domain="))
         .collect::<Vec<_>>()
         .join(";")
+}
+
+#[cfg(test)]
+mod redact_tests {
+    use super::redact_tokens;
+
+    #[test]
+    fn redacts_session_field() {
+        let input = r#"{"session":"AAAA-real-token","other":1}"#;
+        let out = redact_tokens(input);
+        assert!(out.contains("<redacted>"), "got: {out}");
+        assert!(!out.contains("AAAA-real-token"), "raw token leaked: {out}");
+        // Non-token fields preserved.
+        assert!(out.contains("\"other\":1"), "got: {out}");
+    }
+
+    #[test]
+    fn redacts_token_substring_keys() {
+        let input = r#"{"accessToken":"x","refresh_token":"y","tokenExpiry":99}"#;
+        let out = redact_tokens(input);
+        assert!(!out.contains(r#""x""#), "accessToken leaked: {out}");
+        assert!(!out.contains(r#""y""#), "refresh_token leaked: {out}");
+        // tokenExpiry has "token" in the name → also redacted (intentional;
+        // expiry timestamps don't carry secrets but the conservative bias
+        // is correct for a debug surface).
+        assert!(!out.contains("99"), "tokenExpiry value leaked: {out}");
+    }
+
+    #[test]
+    fn passes_non_json_through_verbatim() {
+        let input = "Not a JSON body, just text.";
+        let out = redact_tokens(input);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn redacts_inside_arrays_and_nested_objects() {
+        let input = r#"{"sessions":[{"session":"a"},{"session":"b"}]}"#;
+        let out = redact_tokens(input);
+        assert!(!out.contains(r#""a""#), "got: {out}");
+        assert!(!out.contains(r#""b""#), "got: {out}");
+    }
 }
 
 #[cfg(test)]

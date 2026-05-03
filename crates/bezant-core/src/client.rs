@@ -194,6 +194,22 @@ impl ClientBuilder {
             .cookie_provider(Arc::clone(&cookie_jar))
             .danger_accept_invalid_certs(self.accept_invalid_certs)
             .timeout(self.timeout)
+            // Distinct connect timeout below the holistic `timeout` so a
+            // dead Gateway surfaces fast (5s) instead of after the full
+            // 30s — important for liveness probes / fast retry loops.
+            .connect_timeout(Duration::from_secs(5))
+            // Cap idle pool: reqwest's default is `usize::MAX` which
+            // can leak connections forever under bursty traffic. 32
+            // is plenty for a single Gateway (which talks to one
+            // upstream host at most).
+            .pool_max_idle_per_host(32)
+            // Reap idle connections after 90s so we don't pin file
+            // descriptors against a Gateway that's already dropped
+            // its end of the socket.
+            .pool_idle_timeout(Duration::from_secs(90))
+            // TCP keepalive on the connection itself catches NAT
+            // table evictions / silent drops mid-idle.
+            .tcp_keepalive(Duration::from_secs(30))
             .user_agent(&self.user_agent)
             .redirect(redirect_policy);
         if self.http1_only {

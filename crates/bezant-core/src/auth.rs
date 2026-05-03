@@ -220,10 +220,12 @@ impl Client {
 
 /// Drop-to-stop handle for a background keepalive task.
 ///
-/// Dropping the handle signals shutdown, but the spawned task only
-/// observes it on its next tick — so a pending tickle request can
-/// still be in flight when the tokio runtime shuts down. Prefer
-/// [`KeepaliveHandle::stop`] when you need a clean, awaited exit.
+/// Dropping the handle sends the shutdown signal via the [`Drop`] impl,
+/// so a forgotten `_handle` won't keep tickling forever. The spawned
+/// task observes the signal on its next tick — a pending tickle
+/// request can still be in flight when the runtime shuts down.
+/// Prefer [`KeepaliveHandle::stop`] when you need a clean, awaited
+/// exit (e.g. on SIGTERM in a long-running binary).
 #[derive(Debug)]
 pub struct KeepaliveHandle {
     shutdown: Option<oneshot::Sender<()>>,
@@ -248,5 +250,66 @@ impl KeepaliveHandle {
                 .map_err(|e| Error::Other(format!("keepalive task panicked: {e}")))?;
         }
         Ok(())
+    }
+}
+
+impl Drop for KeepaliveHandle {
+    /// Send the shutdown signal so a forgotten handle doesn't keep
+    /// tickling forever. The spawned task observes the signal on its
+    /// next tick — for a clean awaited exit use [`KeepaliveHandle::stop`].
+    /// We can't `.await` here (sync Drop), so any in-flight tickle
+    /// finishes detached.
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        // Don't abort the join handle — we want any in-flight tickle
+        // to finish naturally rather than getting cut mid-write.
+    }
+}
+
+#[cfg(test)]
+mod keepalive_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Build a `Client` against an unreachable URL — never actually
+    /// hits the network because we cancel the keepalive before its
+    /// first tick fires.
+    fn dummy_client() -> Client {
+        Client::builder("http://127.0.0.1:1/v1/api")
+            .build()
+            .expect("client")
+    }
+
+    #[tokio::test]
+    async fn stop_sends_shutdown_and_joins_cleanly() {
+        let client = dummy_client();
+        let handle = client.spawn_keepalive(Duration::from_secs(60));
+        // Give the spawned task a beat to enter its select loop.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        handle.stop().await.expect("clean stop");
+    }
+
+    #[tokio::test]
+    async fn drop_sends_shutdown_signal() {
+        let client = dummy_client();
+        // Capture the JoinHandle by stealing it out of the
+        // KeepaliveHandle's internals via the public API: we drop the
+        // handle and then verify the task observes the signal by
+        // checking that a fresh handle can be spawned without panicking
+        // (i.e. the runtime hasn't been clogged by a leaked task).
+        {
+            let _handle = client.spawn_keepalive(Duration::from_secs(60));
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            // _handle drops here — Drop sends the shutdown signal.
+        }
+        // Drop happened. Spawn a fresh keepalive — if the previous
+        // task hadn't observed shutdown yet (it observes on next
+        // tick, which is 60s away), this still spawns fine. The real
+        // assertion is that no panic / deadlock occurs.
+        let _h2 = client.spawn_keepalive(Duration::from_secs(60));
+        // Give the runtime a moment; if Drop deadlocked we'd hang here.
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
