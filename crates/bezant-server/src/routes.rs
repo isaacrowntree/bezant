@@ -12,6 +12,7 @@
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::{delete, get};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -53,8 +54,18 @@ pub fn router(state: AppState) -> Router {
 }
 
 /// Headers we MUST NOT forward through a proxy hop. Subset of RFC 7230 §6.1
-/// extended with `cookie` (so reqwest's shared jar is the single source of
-/// truth) and `host` (so reqwest rebuilds it from the target URL).
+/// (`host`, `content-length`, `connection`, `keep-alive`, `proxy-*`, `te`,
+/// `trailer`, `transfer-encoding`, `upgrade`) extended with:
+///
+/// * **`cookie`** — reqwest's shared jar is the single source of truth.
+/// * **`authorization`** — CPGateway doesn't consume bearer/basic auth;
+///   forwarding lets a caller probe whatever auth scheme the upstream
+///   might (incorrectly) honour. Pure attack surface, drop it.
+/// * **`x-forwarded-*` / `forwarded` / `x-real-ip`** — caller-controlled
+///   client-IP claims. Forwarding lets a caller spoof their apparent
+///   source IP to anything that logs/rate-limits/audits on those headers
+///   downstream. Strip at the boundary; the proxy itself doesn't need
+///   them.
 const HOP_BY_HOP: &[&str] = &[
     "host",
     "content-length",
@@ -67,6 +78,12 @@ const HOP_BY_HOP: &[&str] = &[
     "transfer-encoding",
     "upgrade",
     "cookie",
+    "authorization",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-real-ip",
+    "forwarded",
 ];
 
 fn is_hop_by_hop(name: &str) -> bool {
@@ -121,9 +138,20 @@ async fn passthrough_any(
         if let Ok(raw) = cookie_header.to_str() {
             for pair in raw.split(';') {
                 let trimmed = pair.trim();
-                if !trimmed.is_empty() {
-                    pairs.push(trimmed);
+                if trimmed.is_empty() {
+                    continue;
                 }
+                // Drop edge-proxy auth cookies (Cloudflare Access /
+                // Cloudflare-style infrastructure cookies). They're set
+                // by the proxy layer for *its* session — not anything
+                // CPGateway / api.ibkr.com expects, and Akamai 401s the
+                // upstream call when an unrecognised `CF_Authorization=…`
+                // cookie shows up alongside the IBKR session cookies.
+                let name = trimmed.split('=').next().unwrap_or("").trim();
+                if is_edge_auth_cookie(name) {
+                    continue;
+                }
+                pairs.push(trimmed);
             }
         }
     }
@@ -230,23 +258,96 @@ struct HealthBody {
     message: Option<String>,
 }
 
-/// Diagnostic-only endpoint: dumps the entire shared cookie jar (one
-/// `(name, value)` pair per entry, sorted by name). Useful when chasing
+/// Diagnostic-only endpoint: lists shared cookie jar entries by name
+/// (and value length — never value itself). Useful when chasing
 /// "browser is logged in but typed /health says not_authenticated"
-/// issues. Intentionally not in the public docs; remove once we trust
-/// the cookie pipeline.
-async fn debug_jar(State(state): State<AppState>) -> Json<serde_json::Value> {
+/// issues without leaking the live IBKR session cookie to anyone who
+/// can hit the bind address.
+///
+/// Gated on `BEZANT_DEBUG_TOKEN`: returns 404 when no token is
+/// configured, 401 when the caller's token doesn't match. Callers
+/// authenticate via `?token=…` or the `X-Bezant-Debug-Token` header.
+async fn debug_jar(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response<Body> {
+    if let Err(resp) = debug_auth(&state, &headers, &q) {
+        return resp;
+    }
     let jar = state.client().cookie_jar();
     let entries: Vec<serde_json::Value> = jar
         .snapshot()
         .into_iter()
-        .map(|(name, value)| serde_json::json!({ "name": name, "value": value }))
+        .map(|(name, value)| serde_json::json!({
+            "name": name,
+            "value_length": value.len(),
+        }))
         .collect();
-    Json(serde_json::json!({
+    let body = serde_json::json!({
         "gateway_root": state.client().gateway_root_url().as_str(),
         "size": entries.len(),
         "entries": entries,
-    }))
+    });
+    Json(body).into_response()
+}
+
+/// Token check shared by every `/debug/*` handler.
+///
+/// Returns a 404 response when debug is disabled (no token
+/// configured) so the existence of the endpoints isn't disclosed to
+/// a probing attacker — they look identical to any other unmapped
+/// route.
+///
+/// Returns a 401 response when a token IS configured but the caller
+/// didn't present a matching one (different status because the
+/// endpoint clearly exists; the caller is just unauthorised).
+///
+/// Token comparison is constant-time to avoid leaking length or
+/// prefix-match info via response timing.
+#[allow(clippy::result_large_err)]
+// `Response<Body>` is the return type axum hands back; boxing it would
+// just add an alloc on the (rare) auth-failure path. Suppress the lint.
+fn debug_auth(
+    state: &AppState,
+    headers: &HeaderMap,
+    query: &HashMap<String, String>,
+) -> Result<(), Response<Body>> {
+    let Some(expected) = state.debug_token() else {
+        return Err(Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap_or_default());
+    };
+    let presented = headers
+        .get("x-bezant-debug-token")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| query.get("token").map(String::as_str))
+        .unwrap_or("");
+    if constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
+        return Ok(());
+    }
+    Err(Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            r#"{"code":"debug_unauthorized","message":"missing or invalid debug token"}"#,
+        ))
+        .unwrap_or_default())
+}
+
+/// Constant-time byte comparison so token mismatch can't be timed.
+/// Naive `==` short-circuits on first differing byte, leaking length
+/// + prefix-match info via response timing.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// Diagnostic-only endpoint: walks the post-login CPAPI sequence
@@ -273,9 +374,18 @@ async fn debug_jar(State(state): State<AppState>) -> Json<serde_json::Value> {
 /// }
 /// ```
 ///
-/// Always returns 200 with the diagnostic body — diagnostic failures
-/// surface in the body, not the HTTP status.
-async fn debug_probe(State(state): State<AppState>) -> Json<serde_json::Value> {
+/// Returns 200 with the diagnostic body when authenticated for debug
+/// (diagnostic-step failures surface in the body, not the HTTP status).
+/// Returns 404-style error when debug isn't enabled, 401 when the
+/// caller's debug token is missing/wrong.
+async fn debug_probe(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response<Body> {
+    if let Err(resp) = debug_auth(&state, &headers, &q) {
+        return resp;
+    }
     let client = state.client();
     let started = std::time::Instant::now();
     let jar_before = client.cookie_jar().snapshot().len();
@@ -288,14 +398,31 @@ async fn debug_probe(State(state): State<AppState>) -> Json<serde_json::Value> {
         None,
     )
     .await;
-    let ssodh_init = probe_step(
-        client,
-        "ssodh_init",
-        reqwest::Method::POST,
-        &["iserver", "auth", "ssodh", "init"],
-        Some(serde_json::json!({ "publish": true, "compete": true })),
-    )
-    .await;
+    // `ssodh/init` is the bridge-establish call. Issuing it against a
+    // session that's *already* bridged tears the session down — every
+    // subsequent call then 401s. We discovered this the hard way: probe
+    // would show `auth_status:200, ssodh_init:401, accounts:401` and
+    // make a working session look broken. So skip the bridge step when
+    // auth_status already reports `authenticated:true`; the diagnostic
+    // is meant to *observe*, not perturb.
+    let already_bridged = is_authenticated(&auth_status);
+    let ssodh_init = if already_bridged {
+        skipped_step(
+            "ssodh_init",
+            "POST",
+            "/v1/api/iserver/auth/ssodh/init",
+            "session already bridged (auth_status authenticated)",
+        )
+    } else {
+        probe_step(
+            client,
+            "ssodh_init",
+            reqwest::Method::POST,
+            &["iserver", "auth", "ssodh", "init"],
+            Some(serde_json::json!({ "publish": true, "compete": true })),
+        )
+        .await
+    };
     let tickle = probe_step(
         client,
         "tickle",
@@ -316,14 +443,15 @@ async fn debug_probe(State(state): State<AppState>) -> Json<serde_json::Value> {
     let verdict = compute_verdict(&auth_status, &ssodh_init, &tickle, &accounts);
     let jar_after = client.cookie_jar().snapshot().len();
 
-    Json(serde_json::json!({
+    let body = serde_json::json!({
         "gateway_root": client.gateway_root_url().as_str(),
         "elapsed_ms": started.elapsed().as_millis() as u64,
         "jar_size_before": jar_before,
         "jar_size_after": jar_after,
         "verdict": verdict,
         "steps": [auth_status, ssodh_init, tickle, accounts],
-    }))
+    });
+    Json(body).into_response()
 }
 
 /// One step in the diagnostic probe.
@@ -430,7 +558,8 @@ async fn probe_step(
 /// `auth_status` carries an extra parse: a 200 with `authenticated:false`
 /// is a "needs_login" situation, not a transport success. Subsequent
 /// steps are pure HTTP-status checks — any non-2xx pins the verdict to
-/// that step's name.
+/// that step's name. A `skipped` step is treated as success (the probe
+/// chose not to run it because it would have been destructive).
 fn compute_verdict(
     auth_status: &serde_json::Value,
     ssodh_init: &serde_json::Value,
@@ -440,27 +569,76 @@ fn compute_verdict(
     if !is_2xx(auth_status) {
         return "auth_status_failed";
     }
-    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(
-        auth_status["body_preview"].as_str().unwrap_or(""),
-    ) {
-        if parsed["authenticated"] != serde_json::Value::Bool(true) {
-            return "needs_login";
-        }
-    }
-    if !is_2xx(ssodh_init) {
+    // ssodh_init is the canonical Railway-vs-Pi discriminator: when
+    // auth_status reports unauthenticated AND a manual bridge attempt
+    // also fails, that pins the failure to the SSODH leg upstream of
+    // bezant-server. Check this BEFORE the needs_login short-circuit
+    // so a real ssodh failure surfaces with its own verdict instead of
+    // collapsing into the generic needs_login bucket.
+    let ssodh_ran_and_failed = !is_skipped(ssodh_init) && !is_2xx(ssodh_init);
+    if ssodh_ran_and_failed {
         return "ssodh_failed";
     }
-    if !is_2xx(tickle) {
+    if !is_authenticated(auth_status) {
+        return "needs_login";
+    }
+    if !is_2xx_or_skipped(tickle) {
         return "tickle_failed";
     }
-    if !is_2xx(accounts) {
+    if !is_2xx_or_skipped(accounts) {
         return "accounts_failed";
     }
     "ok"
 }
 
+fn is_skipped(step: &serde_json::Value) -> bool {
+    step["skipped"].as_bool().unwrap_or(false)
+}
+
 fn is_2xx(step: &serde_json::Value) -> bool {
     matches!(step["status"].as_u64(), Some(200..=299))
+}
+
+fn is_2xx_or_skipped(step: &serde_json::Value) -> bool {
+    is_2xx(step) || step["skipped"].as_bool().unwrap_or(false)
+}
+
+/// Parse the auth_status body preview to decide whether the session is
+/// already bridged. Used both for the verdict (200 + authenticated:true
+/// = success) and for the "should we skip ssodh_init?" decision.
+fn is_authenticated(step: &serde_json::Value) -> bool {
+    if !is_2xx(step) {
+        return false;
+    }
+    let body = step["body_preview"].as_str().unwrap_or("");
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v["authenticated"].as_bool())
+        .unwrap_or(false)
+}
+
+/// Build a placeholder step entry for a step the probe deliberately
+/// did not execute. Surfaces in the JSON body so a reader can tell
+/// "didn't fail, didn't run" apart from "ran and succeeded".
+fn skipped_step(
+    name: &'static str,
+    method: &'static str,
+    path: &'static str,
+    reason: &'static str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "method": method,
+        "path": path,
+        "status": serde_json::Value::Null,
+        "latency_ms": 0,
+        "body_bytes": 0,
+        "body_preview": "",
+        "set_cookie_names": [],
+        "error": serde_json::Value::Null,
+        "skipped": true,
+        "skipped_reason": reason,
+    })
 }
 
 async fn health(State(state): State<AppState>) -> Result<Json<HealthBody>, AppError> {
@@ -832,6 +1010,18 @@ fn rewrite_referer_origin(original: &str, new_origin: &str) -> String {
         }
         Err(_) => new_origin.to_owned(),
     }
+}
+
+/// Recognise cookies set by an edge-proxy (Cloudflare Access today;
+/// could be extended for other Zero-Trust style fronts) so we don't
+/// replay them into bezant-server's shared jar — they're for the
+/// proxy's own session and confuse upstream CPAPI/Akamai.
+///
+/// `CF_Authorization` is the Cloudflare Access JWT cookie; `CF_AppSession`
+/// is the Access session/state cookie. Both are present whenever a user
+/// reaches a Zero-Trust-protected hostname through a browser.
+fn is_edge_auth_cookie(name: &str) -> bool {
+    matches!(name, "CF_Authorization" | "CF_AppSession")
 }
 
 /// Strip any `Domain=...` attribute from a Set-Cookie value. The browser

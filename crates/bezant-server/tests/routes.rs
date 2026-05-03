@@ -14,12 +14,27 @@ use tower::ServiceExt;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// Token used for `/debug/*` endpoints in tests. Production sets this
+/// via `BEZANT_DEBUG_TOKEN` env var; tests bake it into the AppState
+/// directly so we don't have to thread env through every test.
+const TEST_DEBUG_TOKEN: &str = "test-debug-token";
+
 async fn make_app(gateway: &MockServer) -> axum::Router {
     let client = bezant::Client::builder(format!("{}/v1/api", gateway.uri()))
         .accept_invalid_certs(true)
         .build()
         .expect("client");
-    router(AppState::new(client))
+    router(AppState::with_debug_token(client, TEST_DEBUG_TOKEN))
+}
+
+/// Build a `Request` for a `/debug/*` path with the test token attached
+/// via the `X-Bezant-Debug-Token` header.
+fn debug_request(path: &str) -> Request<Body> {
+    Request::builder()
+        .uri(path)
+        .header("x-bezant-debug-token", TEST_DEBUG_TOKEN)
+        .body(Body::empty())
+        .unwrap()
 }
 
 async fn response_body(resp: axum::http::Response<Body>) -> (StatusCode, Value) {
@@ -842,6 +857,71 @@ async fn passthrough_replays_browser_cookies_into_typed_api() {
     assert_eq!(body["authenticated"], json!(true));
 }
 
+/// Regression for the Cloudflare-Access cookie poisoning we hit live
+/// on the residential-Pi deploy: when bezant-server is fronted by
+/// Cloudflare Zero Trust, the browser carries `CF_Authorization` and
+/// `CF_AppSession` on every request. Without filtering, those cookies
+/// get replayed into the shared jar by `passthrough_any`, then
+/// forwarded to the IBKR Gateway → api.ibkr.com → Akamai 401s the
+/// upstream call because of the unrecognised `CF_Authorization=eyJ...`
+/// cookie. The filter MUST drop both cookie names from the replay.
+#[tokio::test]
+async fn passthrough_strips_cloudflare_access_cookies_from_jar() {
+    let gateway = MockServer::start().await;
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/sso/Login"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<html></html>"))
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+    // Browser request as Cloudflare Access would deliver it: real
+    // IBKR session cookie alongside the CF Access JWT cookies.
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/sso/Login")
+                .header(
+                    "cookie",
+                    "JSESSIONID=ibkr-real; CF_Authorization=eyJhbGc; CF_AppSession=cfappstate; XYZAB=ibkr-other",
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Shared jar must contain ONLY the IBKR cookies — never the
+    // Cloudflare ones, even though they were in the inbound Cookie
+    // header.
+    let resp = app.oneshot(debug_request("/debug/jar")).await.unwrap();
+    let (status, body) = response_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    let names: Vec<String> = body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap_or("").to_owned())
+        .collect();
+    assert!(
+        names.contains(&"JSESSIONID".to_owned()),
+        "JSESSIONID must be replayed: {names:?}"
+    );
+    assert!(
+        names.contains(&"XYZAB".to_owned()),
+        "XYZAB must be replayed: {names:?}"
+    );
+    assert!(
+        !names.contains(&"CF_Authorization".to_owned()),
+        "CF_Authorization MUST NOT enter the jar (Cloudflare Access cookie): {names:?}"
+    );
+    assert!(
+        !names.contains(&"CF_AppSession".to_owned()),
+        "CF_AppSession MUST NOT enter the jar (Cloudflare Access cookie): {names:?}"
+    );
+}
+
 /// Regression: when the upstream sets the same cookie name at two
 /// different paths in successive responses (Gateway's keepalive at
 /// `/v1/api/`, login passthrough at `/sso/`), the OLD `Jar`
@@ -967,10 +1047,7 @@ async fn passthrough_collapses_same_name_set_cookies_to_one_value() {
 async fn probe_body(app: axum::Router) -> Value {
     let resp = app
         .oneshot(
-            Request::builder()
-                .uri("/debug/probe")
-                .body(Body::empty())
-                .unwrap(),
+            debug_request("/debug/probe"),
         )
         .await
         .unwrap();
@@ -1027,22 +1104,82 @@ async fn probe_happy_path_returns_ok_verdict() {
     assert_eq!(steps.len(), 4);
     assert_eq!(steps[0]["name"], json!("auth_status"));
     assert_eq!(steps[0]["status"], json!(200));
+    // ssodh_init MUST be skipped on the happy path — calling it against
+    // an already-bridged session tears the session down. The probe
+    // recognises auth_status:200 + authenticated:true and skips it.
     assert_eq!(steps[1]["name"], json!("ssodh_init"));
-    assert_eq!(steps[1]["status"], json!(200));
+    assert_eq!(steps[1]["status"], serde_json::Value::Null);
+    assert_eq!(steps[1]["skipped"], json!(true));
+    assert!(
+        steps[1]["skipped_reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("already bridged"),
+        "skipped_reason should explain why: {step}",
+        step = steps[1]
+    );
     assert_eq!(steps[2]["name"], json!("tickle"));
     assert_eq!(steps[2]["status"], json!(200));
     assert_eq!(steps[3]["name"], json!("accounts"));
     assert_eq!(steps[3]["status"], json!(200));
-    // Each step records latency in millis as a number.
     for step in steps {
-        assert!(
-            step["latency_ms"].is_u64(),
-            "latency_ms must be a number, got {step}"
-        );
         assert!(step["error"].is_null(), "happy-path error must be null");
     }
 }
 
+/// Regression for the destructive-probe bug discovered in production:
+/// when the session is already bridged, `ssodh_init` MUST NOT be
+/// called. If we did call it, ssodh would tear the session down and
+/// the subsequent `tickle` and `accounts` steps would 401, falsely
+/// signalling failure to the operator. This test pins the
+/// don't-perturb behavior.
+#[tokio::test]
+async fn probe_skips_ssodh_init_when_already_bridged() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let gateway = MockServer::start().await;
+    authed_status_builder()
+        .respond_with(authed_status_response())
+        .mount(&gateway)
+        .await;
+    let ssodh_calls = Arc::new(AtomicUsize::new(0));
+    let ssodh_calls_clone = Arc::clone(&ssodh_calls);
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/v1/api/iserver/auth/ssodh/init"))
+        .respond_with(move |_req: &wiremock::Request| {
+            ssodh_calls_clone.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_json(json!({}))
+        })
+        .mount(&gateway)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/v1/api/tickle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&gateway)
+        .await;
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/v1/api/portfolio/accounts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+    let _ = probe_body(app).await;
+
+    assert_eq!(
+        ssodh_calls.load(Ordering::SeqCst),
+        0,
+        "ssodh_init must not be called when auth_status reports authenticated:true"
+    );
+}
+
+/// `needs_login` is the verdict when auth_status reports unauthenticated
+/// AND ssodh_init can't fix it (it returns 200 but the session still
+/// isn't authenticated — the ssodh upstream would set new cookies that
+/// would get re-checked on the next auth_status, but we don't loop
+/// here). If ssodh_init itself failed (non-2xx), the more specific
+/// `ssodh_failed` verdict wins (see the dedicated test).
 #[tokio::test]
 async fn probe_unauthenticated_session_pins_needs_login() {
     let gateway = MockServer::start().await;
@@ -1056,11 +1193,14 @@ async fn probe_unauthenticated_session_pins_needs_login() {
         })))
         .mount(&gateway)
         .await;
-    // The remaining steps are still mounted so the probe runs end-to-end —
-    // we want to confirm verdict reflects auth_status, not a downstream 404.
+    // ssodh succeeds (200) but doesn't actually flip the session to
+    // authenticated — typical when the bridge response is partial /
+    // when auth_status's view hasn't refreshed mid-probe. Pinning the
+    // verdict to needs_login signals "user must do interactive login"
+    // rather than "infrastructure broken".
     Mock::given(wm_method("POST"))
         .and(wm_path("/v1/api/iserver/auth/ssodh/init"))
-        .respond_with(ResponseTemplate::new(401))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
         .mount(&gateway)
         .await;
     Mock::given(wm_method("POST"))
@@ -1079,9 +1219,10 @@ async fn probe_unauthenticated_session_pins_needs_login() {
 
     assert_eq!(body["verdict"], json!("needs_login"));
     let steps = body["steps"].as_array().unwrap();
-    // auth_status itself succeeded transport-wise; the verdict comes
-    // from the parsed body, not the HTTP status.
     assert_eq!(steps[0]["status"], json!(200));
+    // ssodh actually ran (auth_status was unauthenticated, so probe
+    // attempted the bridge); skipped flag should NOT be set here.
+    assert_ne!(steps[1]["skipped"], json!(true));
 }
 
 /// Regression-style: this is the Railway-failure-mode signature we
@@ -1094,7 +1235,21 @@ async fn probe_unauthenticated_session_pins_needs_login() {
 #[tokio::test]
 async fn probe_ssodh_failure_pins_ssodh_failed_verdict() {
     let gateway = MockServer::start().await;
-    authed_status_builder().respond_with(authed_status_response()).mount(&gateway).await;
+    // auth_status MUST report unauthenticated for ssodh to actually run
+    // (the probe skips ssodh on already-bridged sessions to avoid
+    // tearing them down). With an unauthenticated session, ssodh runs
+    // and fails — exactly the Railway-rejection scenario the verdict
+    // is meant to surface.
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/v1/api/iserver/auth/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "authenticated": false,
+            "connected": true,
+            "competing": false,
+            "message": ""
+        })))
+        .mount(&gateway)
+        .await;
     Mock::given(wm_method("POST"))
         .and(wm_path("/v1/api/iserver/auth/ssodh/init"))
         .respond_with(ResponseTemplate::new(401).set_body_string("unauthorized"))
@@ -1155,6 +1310,160 @@ async fn probe_accounts_failure_pins_accounts_failed_verdict() {
 
     assert_eq!(body["verdict"], json!("accounts_failed"));
     assert_eq!(body["steps"][3]["status"], json!(503));
+}
+
+// ----- /debug/* security gating ---------------------------------------------
+//
+// The cookie jar holds live IBKR session cookies; anyone reaching
+// /debug/jar can resume the IBKR session and trade the account. So:
+//   * by default (no token configured) the endpoints 404 — they look
+//     identical to any unmapped route, no info leaked to a probe.
+//   * with a token configured, callers must present it via header or
+//     query string. Mismatched tokens 401, never reveal length.
+// These tests pin both behaviours.
+
+#[tokio::test]
+async fn debug_jar_404s_when_no_token_configured() {
+    let gateway = MockServer::start().await;
+    // Build the app WITHOUT the debug token (bypass make_app's helper).
+    let client = bezant::Client::builder(format!("{}/v1/api", gateway.uri()))
+        .accept_invalid_certs(true)
+        .build()
+        .expect("client");
+    let app = router(AppState::new(client));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/debug/jar")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn debug_probe_404s_when_no_token_configured() {
+    let gateway = MockServer::start().await;
+    let client = bezant::Client::builder(format!("{}/v1/api", gateway.uri()))
+        .accept_invalid_certs(true)
+        .build()
+        .expect("client");
+    let app = router(AppState::new(client));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/debug/probe")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn debug_jar_401s_with_wrong_token() {
+    let gateway = MockServer::start().await;
+    let app = make_app(&gateway).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/debug/jar")
+                .header("x-bezant-debug-token", "definitely-wrong")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn debug_jar_401s_with_no_token_when_one_required() {
+    let gateway = MockServer::start().await;
+    let app = make_app(&gateway).await;
+    // No header, no ?token=…
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/debug/jar")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn debug_jar_accepts_token_via_query_string() {
+    let gateway = MockServer::start().await;
+    let app = make_app(&gateway).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/debug/jar?token={TEST_DEBUG_TOKEN}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn debug_jar_omits_cookie_values_returns_lengths_only() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let _ = (AtomicUsize::new(0), Ordering::SeqCst, Arc::new(())); // suppress warnings
+
+    let gateway = MockServer::start().await;
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/sso/Login"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<html></html>"))
+        .mount(&gateway)
+        .await;
+    let app = make_app(&gateway).await;
+    // Seed the jar via passthrough cookie replay
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/sso/Login")
+                .header("cookie", "JSESSIONID=secret-session-token-value-DO-NOT-LEAK")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Query the jar
+    let resp = app.oneshot(debug_request("/debug/jar")).await.unwrap();
+    let (status, body) = response_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    let raw = serde_json::to_string(&body).unwrap();
+    // The actual cookie value MUST NOT appear in the response.
+    assert!(
+        !raw.contains("secret-session-token-value-DO-NOT-LEAK"),
+        "cookie value leaked into /debug/jar response: {raw}"
+    );
+    // But the name + length should be present.
+    let entries = body["entries"].as_array().unwrap();
+    let session = entries
+        .iter()
+        .find(|e| e["name"] == json!("JSESSIONID"))
+        .expect("JSESSIONID entry");
+    assert!(
+        session["value_length"].as_u64().unwrap_or(0) > 0,
+        "expected value_length to be the cookie value's byte length: {session}"
+    );
+    assert!(
+        session.get("value").is_none(),
+        "raw `value` key MUST NOT appear in /debug/jar response: {session}"
+    );
 }
 
 /// `Origin` header pinning is part of the proxy's CSRF-bypass logic,

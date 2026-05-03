@@ -54,6 +54,16 @@ struct Args {
     /// allowing them (the Gateway ships with a self-signed cert by default).
     #[arg(long, env = "BEZANT_REJECT_INVALID_CERTS")]
     reject_invalid_certs: bool,
+
+    /// Enable the diagnostic `/debug/*` endpoints, gated by this token.
+    /// Callers must present the same token via `?token=…` query string
+    /// or the `X-Bezant-Debug-Token` header on every `/debug/*` call.
+    /// Without this flag, the endpoints return 404. The cookie jar
+    /// holds live IBKR session cookies — pick a long random token
+    /// (>=32 bytes from `/dev/urandom`) and treat it like a
+    /// credential.
+    #[arg(long, env = "BEZANT_DEBUG_TOKEN")]
+    debug_token: Option<String>,
 }
 
 #[tokio::main]
@@ -88,7 +98,13 @@ async fn main() -> anyhow::Result<()> {
     // Keepalive runs for the lifetime of the server.
     let _keepalive = client.spawn_keepalive(Duration::from_secs(args.keepalive_secs));
 
-    let state = AppState::new(client);
+    let state = match args.debug_token {
+        Some(token) => {
+            info!("debug endpoints enabled (token gating active)");
+            AppState::with_debug_token(client, token)
+        }
+        None => AppState::new(client),
+    };
     let app = router(state).layer(TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(args.bind)
