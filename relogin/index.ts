@@ -94,6 +94,14 @@ interface HealthResponse {
 async function probeHealth(): Promise<HealthResponse | null> {
   try {
     const res = await fetch(HEALTH_URL, { signal: AbortSignal.timeout(10_000) });
+    // bezant-server can respond in two shapes:
+    //   200 OK    {"authenticated": bool, "connected": bool, ...}
+    //   401       {"code": "not_authenticated", "message": "..."}
+    // The 401 shape is a clean "not authenticated yet" signal, not a server
+    // outage — treat it as the authenticated=false case.
+    if (res.status === 401) {
+      return { authenticated: false, connected: false };
+    }
     if (!res.ok) return null;
     return (await res.json()) as HealthResponse;
   } catch {
