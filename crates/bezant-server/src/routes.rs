@@ -250,39 +250,6 @@ async fn passthrough_any(
     }
 
     let resp = builder.send().await.map_err(bezant::Error::Http)?;
-
-    // Capture Set-Cookie headers from the upstream response into the shared
-    // jar, so typed callers (`/health`, `/accounts`, …) see the freshly-
-    // minted session that the interactive browser flow just established.
-    //
-    // reqwest's `cookie_provider` is *supposed* to do this automatically,
-    // but empirically the post-2FA-approval Set-Cookie that CPGateway emits
-    // doesn't make it into the shared jar — possibly because of the
-    // `redirect::Policy::none()` setup (reqwest may only process cookies on
-    // the final response in a redirect chain). Doing it manually is
-    // idempotent (NameKeyedJar replaces by name) and makes the propagation
-    // bulletproof regardless of reqwest's internal behavior.
-    let captured: Vec<String> = resp
-        .headers()
-        .get_all(reqwest::header::SET_COOKIE)
-        .iter()
-        .filter_map(|hv| hv.to_str().ok())
-        // Strip cookie attributes (`Path=`, `Domain=`, `Secure`, etc.) and
-        // keep only the `name=value` pair — that's all the shared jar
-        // stores, and it's what gets replayed on outbound requests.
-        .filter_map(|raw| raw.split(';').next().map(|s| s.trim().to_string()))
-        .filter(|pair| !pair.is_empty())
-        .collect();
-    if !captured.is_empty() {
-        let refs: Vec<&str> = captured.iter().map(String::as_str).collect();
-        state.client().cookie_jar().set_pairs(&refs);
-        tracing::debug!(
-            path = %path_only,
-            captured_cookies = captured.len(),
-            "passthrough cookie capture (response)"
-        );
-    }
-
     forward(resp).await
 }
 
