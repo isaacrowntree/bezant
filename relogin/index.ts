@@ -126,8 +126,33 @@ async function login(browser: Browser): Promise<boolean> {
     log(`Post-submit URL: ${page.url()}`);
     await page.screenshot({ path: `${debugDir}/03-post-submit.png` });
 
-    log('Submitted credentials. Tap "Approve" on IB Key — waiting up to 2 min...');
-    log(`(debug: screenshots in ${debugDir}/, post-submit page title: ${await page.title()})`);
+    // After submitting credentials, IBKR shows a "Select Second Factor Device"
+    // dropdown with options like { "IB Key" => "5.2a", "Mobile Authenticator App" => "4" }.
+    // Selecting an option triggers the actual push; the page itself doesn't
+    // redirect until the user approves on the phone.
+    const twoFactorSelect = page.locator('select').first();
+    if (await twoFactorSelect.count() > 0 && await twoFactorSelect.isVisible()) {
+      log('2FA device prompt detected — selecting IB Key (value=5.2a)');
+      await twoFactorSelect.selectOption({ value: '5.2a' });
+      await page.waitForTimeout(2000);
+      await page.screenshot({ path: `${debugDir}/03b-2fa-selected.png` });
+      // Some IBKR flows render a Continue button only after a device is chosen;
+      // try common patterns but treat absence as fine — selecting the option
+      // is often enough to trigger the push on its own.
+      const continueBtn = page.locator(
+        'button:has-text("Continue"), input[value="Continue"], button:has-text("Submit"), input[type="submit"]',
+      ).first();
+      if (await continueBtn.count() > 0 && await continueBtn.isVisible()) {
+        log('Clicking Continue/Submit after device selection');
+        await continueBtn.click().catch(() => {
+          /* non-fatal — selection alone may have already fired the push */
+        });
+        await page.waitForTimeout(1500);
+      }
+    }
+
+    log('Submitted credentials + 2FA device. Tap "Approve" on IB Key — waiting up to 2 min...');
+    log(`(debug: screenshots in ${debugDir}/, page title: ${await page.title()})`);
 
     // Use bezant-server's /health as the post-login signal of truth: when
     // CPGateway has minted its internal cookie jar, /health flips to
