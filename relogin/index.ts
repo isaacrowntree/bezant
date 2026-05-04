@@ -106,17 +106,28 @@ async function probeHealth(): Promise<HealthResponse | null> {
 async function login(browser: Browser): Promise<boolean> {
   const ctx = await browser.newContext({ ignoreHTTPSErrors: true });
   const page = await ctx.newPage();
+  const debugDir = '/tmp/bezant-relogin';
+  await fs.mkdir(debugDir, { recursive: true });
   try {
     log(`Opening ${LOGIN_URL}`);
     await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    log(`Landed on: ${page.url()}`);
+    await page.screenshot({ path: `${debugDir}/01-initial.png` });
 
     // Selectors track CPGateway's stable form. If IBKR redesigns the login
     // page these may need adjusting — confirm against the live page source.
     await page.fill('#user_name, input[name="username"]', USERNAME!);
     await page.fill('#password, input[name="password"]', PASSWORD!);
+    await page.screenshot({ path: `${debugDir}/02-filled.png` });
     await page.click('#submitForm, button[type="submit"], input[type="submit"]');
 
+    // Give the post-submit page time to render — useful for screenshot
+    await page.waitForTimeout(3000);
+    log(`Post-submit URL: ${page.url()}`);
+    await page.screenshot({ path: `${debugDir}/03-post-submit.png` });
+
     log('Submitted credentials. Tap "Approve" on IB Key — waiting up to 2 min...');
+    log(`(debug: screenshots in ${debugDir}/, post-submit page title: ${await page.title()})`);
 
     // Use bezant-server's /health as the post-login signal of truth: when
     // CPGateway has minted its internal cookie jar, /health flips to
@@ -127,13 +138,18 @@ async function login(browser: Browser): Promise<boolean> {
       const h = await probeHealth();
       if (h?.authenticated) {
         log('IB Key approved — /health.authenticated=true');
+        await page.screenshot({ path: `${debugDir}/04-success.png` });
         return true;
       }
     }
     log('Timed out waiting for IB Key approval');
+    await page.screenshot({ path: `${debugDir}/04-timeout.png` });
     return false;
   } catch (err) {
     log(`Login failed: ${(err as Error).message}`);
+    try {
+      await page.screenshot({ path: `${debugDir}/99-error.png` });
+    } catch {}
     return false;
   } finally {
     await ctx.close();
