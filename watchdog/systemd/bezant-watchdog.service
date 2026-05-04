@@ -1,0 +1,17 @@
+[Unit]
+Description=Bezant container liveness watchdog (auto-restart on wedged session)
+Documentation=https://github.com/isaacrowntree/bezant/tree/main/watchdog
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/bezant-watchdog
+ExecStart=/usr/bin/env npx tsx %h/bezant-watchdog/index.ts
+StandardOutput=journal
+StandardError=journal
+# Bound the worst case: a slow docker restart + post-restart probes (~60s)
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=Probe bezant /health and restart container if wedged
+Documentation=https://github.com/isaacrowntree/bezant/tree/main/watchdog
+
+[Timer]
+# Fire 90s after boot (after bezant has had time to come up + relogin's
+# initial tick), then every 60s thereafter.
+OnBootSec=90
+OnUnitActiveSec=60
+# Catch up on missed ticks if the Pi was off.
+Persistent=true
+Unit=bezant-watchdog.service
+
+[Install]
+WantedBy=timers.target
