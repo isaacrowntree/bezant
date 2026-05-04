@@ -104,8 +104,32 @@ async function probeHealth(): Promise<HealthResponse | null> {
 // ---------- login flow ----------
 
 async function login(browser: Browser): Promise<boolean> {
-  const ctx = await browser.newContext({ ignoreHTTPSErrors: true });
+  const ctx = await browser.newContext({
+    ignoreHTTPSErrors: true,
+    // Match a real browser fingerprint so IBKR doesn't shunt us into
+    // extra-suspicious modes (challenge-response fallback, etc.)
+    viewport: { width: 1280, height: 800 },
+    userAgent:
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  });
   const page = await ctx.newPage();
+
+  // Network trace: log every navigation request + response status so we can
+  // see what HTTP traffic happens during the 2-min approval wait. If the
+  // browser is silent during that window, JS polling isn't working and we
+  // need to reload the page manually.
+  page.on('request', (req) => {
+    if (req.resourceType() === 'document' || req.resourceType() === 'xhr' || req.resourceType() === 'fetch') {
+      log(`HTTP ▶ ${req.method()} ${req.url()}`);
+    }
+  });
+  page.on('response', (res) => {
+    const t = res.request().resourceType();
+    if (t === 'document' || t === 'xhr' || t === 'fetch') {
+      log(`HTTP ◀ ${res.status()} ${res.url()}`);
+    }
+  });
+
   const debugDir = '/tmp/bezant-relogin';
   await fs.mkdir(debugDir, { recursive: true });
   try {
@@ -157,7 +181,16 @@ async function login(browser: Browser): Promise<boolean> {
     // Use bezant-server's /health as the post-login signal of truth: when
     // CPGateway has minted its internal cookie jar, /health flips to
     // authenticated=true. This sidesteps any need to match a redirect URL.
+    //
+    // Belt-and-braces: every RELOAD_INTERVAL we also force a page reload, in
+    // case headless Chromium has throttled the page's JS polling (IBKR's
+    // "Open notification" page is supposed to auto-advance after approval —
+    // if it doesn't, manually re-fetching the URL gets the fresh server-side
+    // state).
+    const RELOAD_INTERVAL_MS = 15_000;
     const start = Date.now();
+    let lastReload = Date.now();
+    let snapshotCounter = 0;
     while (Date.now() - start < POST_LOGIN_TIMEOUT_MS) {
       await new Promise((r) => setTimeout(r, HEALTH_POLL_INTERVAL_MS));
       const h = await probeHealth();
@@ -166,8 +199,19 @@ async function login(browser: Browser): Promise<boolean> {
         await page.screenshot({ path: `${debugDir}/04-success.png` });
         return true;
       }
+      if (Date.now() - lastReload >= RELOAD_INTERVAL_MS) {
+        snapshotCounter += 1;
+        log(`Reloading page to force any stale JS to re-fetch (URL: ${page.url()})`);
+        try {
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 });
+          await page.screenshot({ path: `${debugDir}/wait-${snapshotCounter}.png` });
+        } catch (err) {
+          log(`Reload failed (non-fatal): ${(err as Error).message}`);
+        }
+        lastReload = Date.now();
+      }
     }
-    log('Timed out waiting for IB Key approval');
+    log(`Timed out waiting for IB Key approval (final URL: ${page.url()})`);
     await page.screenshot({ path: `${debugDir}/04-timeout.png` });
     return false;
   } catch (err) {
