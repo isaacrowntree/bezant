@@ -182,14 +182,12 @@ async function login(browser: Browser): Promise<boolean> {
     // CPGateway has minted its internal cookie jar, /health flips to
     // authenticated=true. This sidesteps any need to match a redirect URL.
     //
-    // Belt-and-braces: every RELOAD_INTERVAL we also force a page reload, in
-    // case headless Chromium has throttled the page's JS polling (IBKR's
-    // "Open notification" page is supposed to auto-advance after approval —
-    // if it doesn't, manually re-fetching the URL gets the fresh server-side
-    // state).
-    const RELOAD_INTERVAL_MS = 15_000;
+    // Do NOT reload the page during the wait — IBKR's 2FA flow keeps state
+    // in client-side JS, and reloading boots us back to the login form,
+    // invalidating any push the user is about to tap.
+    const SNAPSHOT_INTERVAL_MS = 20_000;
     const start = Date.now();
-    let lastReload = Date.now();
+    let lastSnapshot = Date.now();
     let snapshotCounter = 0;
     while (Date.now() - start < POST_LOGIN_TIMEOUT_MS) {
       await new Promise((r) => setTimeout(r, HEALTH_POLL_INTERVAL_MS));
@@ -199,16 +197,15 @@ async function login(browser: Browser): Promise<boolean> {
         await page.screenshot({ path: `${debugDir}/04-success.png` });
         return true;
       }
-      if (Date.now() - lastReload >= RELOAD_INTERVAL_MS) {
+      if (Date.now() - lastSnapshot >= SNAPSHOT_INTERVAL_MS) {
         snapshotCounter += 1;
-        log(`Reloading page to force any stale JS to re-fetch (URL: ${page.url()})`);
+        log(`Snapshot (URL: ${page.url()})`);
         try {
-          await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 });
           await page.screenshot({ path: `${debugDir}/wait-${snapshotCounter}.png` });
-        } catch (err) {
-          log(`Reload failed (non-fatal): ${(err as Error).message}`);
+        } catch {
+          /* non-fatal */
         }
-        lastReload = Date.now();
+        lastSnapshot = Date.now();
       }
     }
     log(`Timed out waiting for IB Key approval (final URL: ${page.url()})`);
