@@ -413,6 +413,22 @@ impl ConnectorActor {
     /// Decode + push a single WS frame into the appropriate ring.
     async fn handle_frame(&mut self, frame: WsMessage) {
         let now = now_iso();
+        // Diagnostic: trace topic + first 200 chars of payload for every
+        // frame so we can see CPAPI's actual topic strings for unrecognised
+        // sor/spl variants. Cheap; gated to debug level so prod is silent.
+        if let Some(v) = frame.as_value() {
+            let snippet = serde_json::to_string(v).unwrap_or_default();
+            let topic_str = v
+                .get("topic")
+                .and_then(|t| t.as_str())
+                .unwrap_or("<no-topic>");
+            debug!(
+                variant = frame.topic(),
+                topic = topic_str,
+                payload = %truncate(&snippet, 200),
+                "events connector: frame"
+            );
+        }
         match frame {
             WsMessage::Heartbeat | WsMessage::System(_) | WsMessage::Other(_) => {
                 // Not interesting for downstream consumers; just record
