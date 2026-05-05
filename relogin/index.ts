@@ -31,7 +31,21 @@ const USERNAME = process.env.IBKR_USERNAME;
 const PASSWORD = process.env.IBKR_PASSWORD;
 const POST_LOGIN_TIMEOUT_MS = 2 * 60 * 1000; // 2 min for IB Key tap
 const HEALTH_POLL_INTERVAL_MS = 5_000;
-const MAX_CONSECUTIVE_FAILURES = 3;
+// One push per session-expiry, then disabled until manual reset.
+//
+// We tried 3 here originally on the assumption "user might miss the first
+// push, give them a couple more chances within ~15 min". Empirically the
+// failure mode this produced was strictly worse: when the user genuinely
+// wasn't around (asleep, at the gym), 3 pushes per attempt × N watchdog
+// cycles overnight = ~15 buzzes on the phone, in tight bursts. One per
+// expiry-event is the right UX.
+//
+// Recovery: after a fail, the disabled sentinel is set and no further
+// auto-attempts run. Manual reset via `ssh zackdesign-pi 'rm -f
+// ~/.local/state/bezant-relogin/disabled && systemctl --user start
+// bezant-relogin.service'` triggers a fresh push at a time of the user's
+// choosing.
+const MAX_CONSECUTIVE_FAILURES = 1;
 
 const STATE_DIR = process.env.BEZANT_RELOGIN_STATE_DIR
   ?? path.join(os.homedir(), '.local', 'state', 'bezant-relogin');

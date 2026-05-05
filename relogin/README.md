@@ -13,8 +13,16 @@ This script automates the boring parts of re-login:
   `https://localhost:5000` to fill username + password
 - Triggers an IB Key push to your phone — you tap "Approve"
 - Polls `/health` for up to 2 min until it flips to `authenticated=true`
-- After 3 consecutive failed attempts, writes a `disabled` sentinel and
-  stops auto-firing. Manual reset clears it.
+- **One push per session-expiry event.** If the push isn't tapped within
+  2 minutes, writes a `disabled` sentinel and stops auto-firing. Manual
+  reset (one SSH command) triggers a fresh attempt at a time of your
+  choosing.
+
+Why one push instead of three: empirically, when you're away (asleep,
+gym, meeting) running multiple attempts inside the 5-min timer window
+just spams the phone with IB Key pushes you can't respond to. One push
+preserves the natural escape valve while you're around, and goes silent
+when you're not.
 
 It does **not** automate the IB Key approval — by design. That stays a
 human-in-the-loop step so the Pi can't be silently logged in if the

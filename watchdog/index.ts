@@ -2,25 +2,22 @@
  * bezant-watchdog
  *
  * Pi-side liveness watchdog for the bezant Docker container. Runs once per
- * minute via systemd timer. Detects two failure modes that have empirically
- * required a `docker restart bezant` to recover:
+ * minute via systemd timer. Restarts the container when `/health` returns
+ * 5xx or unreachable for 5 consecutive probes — the only failure mode that
+ * empirically requires a `docker restart bezant` to recover from.
  *
- *   1. The container is alive but `/health` returns 5xx / unreachable for
- *      several consecutive probes (server crashed but PID still alive,
- *      networking stack wedged, etc.).
+ * IMPORTANT: this watchdog does NOT restart on `bezant-relogin` having
+ * disabled itself. The disabled sentinel is the user's "I'm not around to
+ * tap a phone push right now" signal; auto-restarting and re-enabling
+ * relogin in that case just spams the phone with IB Key pushes during
+ * gym/sleep/meeting hours. If the disabled flag is present, the watchdog
+ * leaves it alone and the user re-enables manually when they're ready.
  *
- *   2. The IBKR session can't be restored: bezant-relogin has tried 3 times
- *      and self-disabled. Either the user genuinely isn't around to tap the
- *      IB Key push, OR (the bug we're hedging against) bezant/CPGateway is
- *      in a stuck state where logins succeed in the browser but the typed
- *      `/health` keeps reporting authenticated=false.
+ * After a 5xx-triggered restart we DO clear the disabled sentinel — the
+ * working assumption is the disable was caused by the same wedged state
+ * the restart just fixed, so we want relogin to retry.
  *
- * On either trigger: `docker restart bezant`, clear the relogin disabled
- * sentinel, log the action. The next bezant-relogin timer tick (5 min later)
- * fires a fresh login attempt against the freshly-restarted container.
- *
- * 2-hour cooldown between restarts prevents loops if the user genuinely
- * isn't around to tap a phone push.
+ * 2-hour cooldown between restarts prevents loops on persistent issues.
  *
  * Logs go to stdout → systemd journal. Tail with:
  *   journalctl --user -u bezant-watchdog -f
@@ -199,12 +196,10 @@ async function main(): Promise<void> {
     log(
       `status: health=${currentHealth} relogin_failures=${reloginFailures} relogin_disabled=${reloginDisabled} (cooldown ${cdMin}min remaining)`,
     );
-  } else if (reloginDisabled) {
-    restartReason = `bezant-relogin self-disabled (${reloginFailures} consecutive failures) — bouncing bezant to clear potentially-wedged session state`;
   } else if (state.consecutiveServerErrors >= SERVER_ERROR_THRESHOLD) {
     restartReason = `${state.consecutiveServerErrors} consecutive server_error/unreachable probes`;
   } else {
-    log(`status: health=${currentHealth} relogin_failures=${reloginFailures} (healthy)`);
+    log(`status: health=${currentHealth} relogin_failures=${reloginFailures} relogin_disabled=${reloginDisabled} (healthy)`);
   }
 
   if (restartReason) {
