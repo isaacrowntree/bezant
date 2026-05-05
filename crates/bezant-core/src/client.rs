@@ -39,6 +39,7 @@ struct ClientInner {
     base_url: url::Url,
     gateway_root: url::Url,
     cookie_jar: Arc<NameKeyedJar>,
+    accept_invalid_certs: bool,
 }
 
 impl Client {
@@ -72,6 +73,15 @@ impl Client {
     #[must_use]
     pub fn http(&self) -> &reqwest::Client {
         &self.inner.http
+    }
+
+    /// Whether the client was built with `accept_invalid_certs(true)`.
+    /// `WsClient::connect` reads this to decide whether to use a
+    /// permissive rustls verifier for WS handshakes against the
+    /// Gateway's self-signed cert.
+    #[must_use]
+    pub fn accepts_invalid_certs(&self) -> bool {
+        self.inner.accept_invalid_certs
     }
 
     /// Base URL the client is pointed at, including the CPAPI prefix
@@ -248,6 +258,7 @@ impl ClientBuilder {
                 base_url,
                 gateway_root,
                 cookie_jar,
+                accept_invalid_certs: self.accept_invalid_certs,
             }),
         })
     }

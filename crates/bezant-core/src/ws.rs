@@ -218,6 +218,11 @@ impl WsClient {
     /// 3. Attaches `Cookie: api={"session":"…"}` to the WS handshake.
     /// 4. Returns a connected [`WsClient`].
     ///
+    /// When the underlying client was built with `accept_invalid_certs(true)`
+    /// (the default for talking to the Gateway's self-signed cert), the WS
+    /// handshake uses a permissive rustls verifier so the TLS layer doesn't
+    /// reject the same cert reqwest already accepts on the REST side.
+    ///
     /// # Errors
     /// Any tickle / handshake / TLS failure surfaces as [`Error`].
     #[tracing::instrument(skip(client), level = "debug")]
@@ -253,12 +258,22 @@ impl WsClient {
                 })?,
         );
 
-        let (stream, _) = tokio_tungstenite::connect_async(request)
-            .await
-            .map_err(|source| Error::WsHandshake {
-                url: ws_url.to_string(),
-                source,
-            })?;
+        let (stream, _) = if client.accepts_invalid_certs() {
+            let connector = permissive_tls_connector();
+            tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
+                .await
+                .map_err(|source| Error::WsHandshake {
+                    url: ws_url.to_string(),
+                    source,
+                })?
+        } else {
+            tokio_tungstenite::connect_async(request)
+                .await
+                .map_err(|source| Error::WsHandshake {
+                    url: ws_url.to_string(),
+                    source,
+                })?
+        };
 
         Ok(Self { stream })
     }
@@ -430,6 +445,72 @@ impl WsClient {
     pub const fn recommended_keepalive() -> Duration {
         Duration::from_secs(60)
     }
+}
+
+/// Build a `tokio_tungstenite::Connector::Rustls` that accepts any
+/// server cert. Used when the underlying [`Client`] was configured
+/// with `accept_invalid_certs(true)` — the Gateway's default
+/// self-signed cert is well past expiry and reqwest already trusts
+/// it; the WS handshake needs the same kindness.
+fn permissive_tls_connector() -> tokio_tungstenite::Connector {
+    use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct AcceptAll;
+    impl rustls::client::danger::ServerCertVerifier for AcceptAll {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &rustls_pki_types::CertificateDer<'_>,
+            _intermediates: &[rustls_pki_types::CertificateDer<'_>],
+            _server_name: &rustls_pki_types::ServerName<'_>,
+            _ocsp: &[u8],
+            _now: rustls_pki_types::UnixTime,
+        ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &rustls_pki_types::CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &rustls_pki_types::CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            // The full list rustls's default verifier supports — keep
+            // permissive across both TLS 1.2 and TLS 1.3 schemes.
+            vec![
+                rustls::SignatureScheme::RSA_PKCS1_SHA256,
+                rustls::SignatureScheme::RSA_PKCS1_SHA384,
+                rustls::SignatureScheme::RSA_PKCS1_SHA512,
+                rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+                rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+                rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+                rustls::SignatureScheme::RSA_PSS_SHA256,
+                rustls::SignatureScheme::RSA_PSS_SHA384,
+                rustls::SignatureScheme::RSA_PSS_SHA512,
+                rustls::SignatureScheme::ED25519,
+            ]
+        }
+    }
+
+    let crypto = rustls::crypto::ring::default_provider();
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(crypto))
+        .with_safe_default_protocol_versions()
+        .expect("rustls default protocol versions are supported")
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AcceptAll))
+        .with_no_client_auth();
+
+    tokio_tungstenite::Connector::Rustls(Arc::new(config))
 }
 
 /// Derive the WebSocket URL from a REST base URL.
