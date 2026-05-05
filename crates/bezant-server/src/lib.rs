@@ -9,9 +9,11 @@
 #![deny(missing_docs)]
 
 mod error;
+pub mod events;
 mod routes;
 mod state;
 
 pub use error::{AppError, ErrorBody};
+pub use events::{spawn_connector, ConnectorCfg, EventsHandle};
 pub use routes::router;
 pub use state::AppState;

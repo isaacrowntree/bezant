@@ -48,7 +48,7 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer};
 use tracing::{info, info_span, warn, Level};
 
-use bezant_server::{router, AppState};
+use bezant_server::{router, spawn_connector, AppState, ConnectorCfg};
 
 /// CLI for running the Bezant HTTP sidecar.
 #[derive(Debug, Parser)]
@@ -88,6 +88,32 @@ struct Args {
     /// credential.
     #[arg(long, env = "BEZANT_DEBUG_TOKEN")]
     debug_token: Option<String>,
+
+    /// Run an internal WebSocket consumer that captures order/PnL/market
+    /// data events into ring buffers exposed via `/events/*`. When off,
+    /// `/events/*` routes return 503. Default off so existing deploys
+    /// behave unchanged; enable explicitly via `BEZANT_EVENTS_ENABLED=1`.
+    #[arg(long, env = "BEZANT_EVENTS_ENABLED", default_value_t = false)]
+    events_enabled: bool,
+
+    /// Capacity of the orders event ring (P0 default 1000).
+    #[arg(long, env = "BEZANT_EVENTS_ORDERS_CAP", default_value_t = 1_000)]
+    events_orders_cap: usize,
+
+    /// Capacity of the PnL event ring (P0 default 5000).
+    #[arg(long, env = "BEZANT_EVENTS_PNL_CAP", default_value_t = 5_000)]
+    events_pnl_cap: usize,
+
+    /// Per-conid capacity of the market-data event ring.
+    #[arg(long, env = "BEZANT_EVENTS_MARKETDATA_CAP", default_value_t = 2_000)]
+    events_marketdata_cap: usize,
+
+    /// If set, persist captured events to a sqlite database at this
+    /// path. The `/events/{topic}/history` route serves reads from
+    /// this store (in addition to the in-memory ring buffers).
+    /// Without this, history is bounded by ring capacity only.
+    #[arg(long, env = "BEZANT_EVENTS_DB_PATH")]
+    events_db_path: Option<String>,
 }
 
 #[tokio::main]
@@ -124,12 +150,47 @@ async fn main() -> anyhow::Result<()> {
     // cleanly during graceful shutdown.
     let keepalive = client.spawn_keepalive(Duration::from_secs(args.keepalive_secs));
 
-    let state = match args.debug_token {
+    let state_base = match args.debug_token {
         Some(token) => {
             info!("debug endpoints enabled (token gating active)");
-            AppState::with_debug_token(client, token)
+            AppState::with_debug_token(client.clone(), token)
         }
-        None => AppState::new(client),
+        None => AppState::new(client.clone()),
+    };
+
+    let state = if args.events_enabled {
+        let event_log = match &args.events_db_path {
+            Some(path) => {
+                info!(path = %path, "opening events sqlite log");
+                let log = bezant_server::events::EventLog::open(path)
+                    .context("opening events sqlite db")?;
+                Some(std::sync::Arc::new(log))
+            }
+            None => {
+                info!("BEZANT_EVENTS_DB_PATH not set — /events/{{topic}}/history will return 503");
+                None
+            }
+        };
+
+        info!(
+            orders_cap = args.events_orders_cap,
+            pnl_cap = args.events_pnl_cap,
+            marketdata_cap = args.events_marketdata_cap,
+            persistence = event_log.is_some(),
+            "events capture enabled (/events/* routes active)"
+        );
+        let cfg = ConnectorCfg {
+            orders_capacity: args.events_orders_cap,
+            pnl_capacity: args.events_pnl_cap,
+            marketdata_capacity: args.events_marketdata_cap,
+            event_log,
+            ..ConnectorCfg::default()
+        };
+        let handle = spawn_connector(client, cfg);
+        state_base.with_events(handle)
+    } else {
+        info!("events capture disabled (/events/* routes will return 503)");
+        state_base
     };
     // Build the production middleware stack here so the integration tests
     // (which call `router(state)` directly) get the same proxy semantics

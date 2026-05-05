@@ -42,6 +42,12 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/contracts/search", get(contract_search))
         .route("/market/snapshot", get(market_snapshot))
+        .route("/events/orders", get(events_orders))
+        .route("/events/pnl", get(events_pnl))
+        .route("/events/marketdata", get(events_marketdata))
+        .route("/events/gap", get(events_gap))
+        .route("/events/_status", get(events_status))
+        .route("/events/{topic}/history", get(events_history))
         // Anything we haven't explicitly wrapped falls through to the
         // Gateway verbatim. The big reason this matters: the CPGateway's
         // interactive login flow (`/sso/Login`, static JS/CSS/img assets,
@@ -1195,6 +1201,252 @@ fn strip_cookie_domain(value: &str) -> String {
         .filter(|part| !part.trim().to_ascii_lowercase().starts_with("domain="))
         .collect::<Vec<_>>()
         .join(";")
+}
+
+// ===========================================================================
+// /events/* handlers — cursor-based reads against the in-memory ring buffers
+// maintained by the connector task. See `events::connector::EventsHandle`.
+// ===========================================================================
+
+/// Query string for `/events/{topic}` reads.
+#[derive(Debug, Deserialize)]
+struct EventsQuery {
+    /// Resume from this cursor (exclusive). `0` (or omitted) means "from
+    /// the head of the buffer".
+    #[serde(default)]
+    since: u64,
+    /// Maximum number of events to return. Defaults to `100`, capped at
+    /// `1000` server-side to bound response size.
+    #[serde(default = "EventsQuery::default_limit")]
+    limit: usize,
+}
+
+impl EventsQuery {
+    fn default_limit() -> usize {
+        100
+    }
+}
+
+/// 412 body when the caller's cursor falls past the ring buffer's head.
+#[derive(Debug, Serialize)]
+struct CursorExpiredBody {
+    code: &'static str,
+    head_cursor: u64,
+    reset_epoch: u64,
+    message: &'static str,
+}
+
+async fn events_orders(
+    State(state): State<AppState>,
+    Query(q): Query<EventsQuery>,
+) -> Response<Body> {
+    read_events_topic(&state, "orders", q).await
+}
+
+async fn events_pnl(
+    State(state): State<AppState>,
+    Query(q): Query<EventsQuery>,
+) -> Response<Body> {
+    read_events_topic(&state, "pnl", q).await
+}
+
+async fn events_gap(
+    State(state): State<AppState>,
+    Query(q): Query<EventsQuery>,
+) -> Response<Body> {
+    read_events_topic(&state, "gap", q).await
+}
+
+#[derive(Debug, Deserialize)]
+struct MarketDataEventsQuery {
+    conid: i64,
+    #[serde(default)]
+    since: u64,
+    #[serde(default = "EventsQuery::default_limit")]
+    limit: usize,
+}
+
+async fn events_marketdata(
+    State(state): State<AppState>,
+    Query(q): Query<MarketDataEventsQuery>,
+) -> Response<Body> {
+    let Some(handle) = state.events() else {
+        return events_disabled_response();
+    };
+    // Lazily ensure the upstream WS is subscribed for this conid.
+    if let Err(e) = handle.ensure_market_data(q.conid).await {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({
+                "code": "events_subscribe_failed",
+                "message": e,
+            })),
+        )
+            .into_response();
+    }
+
+    let topic = format!("marketdata:{}", q.conid);
+    let limit = q.limit.min(1_000);
+    read_events_topic_resolved(handle, &topic, q.since, limit).await
+}
+
+async fn events_status(State(state): State<AppState>) -> Response<Body> {
+    let Some(handle) = state.events() else {
+        return events_disabled_response();
+    };
+    Json(handle.status().await).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryQuery {
+    /// RFC 3339 timestamp lower bound (exclusive). Required.
+    since_ts: String,
+    /// Cap on returned rows. Default 500, server cap 5000.
+    #[serde(default = "HistoryQuery::default_limit")]
+    limit: usize,
+}
+
+impl HistoryQuery {
+    fn default_limit() -> usize {
+        500
+    }
+}
+
+async fn events_history(
+    State(state): State<AppState>,
+    Path(topic): Path<String>,
+    Query(q): Query<HistoryQuery>,
+) -> Response<Body> {
+    let Some(handle) = state.events() else {
+        return events_disabled_response();
+    };
+    let Some(log) = handle.event_log() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "code": "events_history_disabled",
+                "message": "events sqlite persistence is not enabled \
+                            (set BEZANT_EVENTS_DB_PATH to turn it on)"
+            })),
+        )
+            .into_response();
+    };
+    let limit = q.limit.min(5_000).max(1);
+    let log_clone = log.clone();
+    let topic_clone = topic.clone();
+    let since_ts = q.since_ts.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        log_clone.query_since(&topic_clone, &since_ts, limit)
+    })
+    .await;
+    match result {
+        Ok(Ok(events)) => {
+            let body = serde_json::json!({
+                "topic": topic,
+                "events": events,
+                "count": events.len(),
+            });
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "code": "events_history_query_failed",
+                "message": e.to_string(),
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "code": "events_history_join_failed",
+                "message": e.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+async fn read_events_topic(state: &AppState, topic: &str, q: EventsQuery) -> Response<Body> {
+    let Some(handle) = state.events() else {
+        return events_disabled_response();
+    };
+    read_events_topic_resolved(handle, topic, q.since, q.limit.min(1_000)).await
+}
+
+async fn read_events_topic_resolved(
+    handle: &crate::events::EventsHandle,
+    topic: &str,
+    since: u64,
+    limit: usize,
+) -> Response<Body> {
+    let Some(result) = handle.read_topic(topic, since, limit.max(1)).await else {
+        // Topic doesn't exist yet — no events have ever arrived for it.
+        // Return a 200 with empty array + the caller's cursor so polls
+        // remain idempotent until the first event lands.
+        let status = handle.status().await;
+        let body = serde_json::json!({
+            "events": [],
+            "next_cursor": since,
+            "reset_epoch": status.reset_epoch,
+        });
+        return (StatusCode::OK, Json(body)).into_response();
+    };
+
+    use crate::events::ReadResult;
+    match result {
+        ReadResult::Ok { events, next_cursor } => {
+            if events.is_empty() {
+                // No new events — 204 to make "nothing happened" cheap to
+                // detect on the client side without parsing a body.
+                let mut response = Response::builder()
+                    .status(StatusCode::NO_CONTENT)
+                    .body(Body::empty())
+                    .unwrap();
+                let cursor_str = next_cursor.to_string();
+                if let Ok(v) = HeaderValue::from_str(&cursor_str) {
+                    response.headers_mut().insert("x-bezant-cursor", v);
+                }
+                return response;
+            }
+            let reset_epoch = events
+                .first()
+                .map(|e| e.reset_epoch)
+                .unwrap_or_else(|| 0);
+            let body = serde_json::json!({
+                "events": events,
+                "next_cursor": next_cursor,
+                "reset_epoch": reset_epoch,
+            });
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        ReadResult::CursorExpired {
+            head_cursor,
+            reset_epoch,
+        } => {
+            let body = CursorExpiredBody {
+                code: "cursor_expired",
+                head_cursor,
+                reset_epoch,
+                message:
+                    "the requested cursor is older than the oldest buffered event; \
+                     reset to head_cursor and emit a synthetic gap on the consumer side",
+            };
+            (StatusCode::PRECONDITION_FAILED, Json(body)).into_response()
+        }
+    }
+}
+
+fn events_disabled_response() -> Response<Body> {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({
+            "code": "events_disabled",
+            "message": "events capture is not enabled on this bezant-server instance \
+                        (set BEZANT_EVENTS_ENABLED=1 to turn it on)"
+        })),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
