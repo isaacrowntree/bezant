@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`/events/*` capture surface on `bezant-server`.** Optional internal
+  CPAPI WebSocket consumer (`BEZANT_EVENTS_ENABLED=true`) that drives
+  `bezant-core::WsClient` against `/v1/api/ws`, decodes order/PnL/market-
+  data frames, and serves them via cursor-paginated REST:
+  `/events/orders`, `/events/pnl`, `/events/marketdata?conid=…`,
+  `/events/gap`, `/events/_status`. Per-topic ring buffers
+  (`BEZANT_EVENTS_{ORDERS,PNL,MARKETDATA}_CAP`) bound the in-memory
+  footprint; reads return 200/204/412 with monotonic cursors and a
+  `reset_epoch` that bumps on reconnect so consumers can detect gaps.
+- **Optional sqlite history.** `BEZANT_EVENTS_DB_PATH` mirrors every
+  captured event into a sqlite log (`events(id, cursor, topic,
+  received_at, reset_epoch, payload)`) served via
+  `GET /events/{topic}/history?since_ts=…`. Per-topic retention
+  (orders/pnl 90d, marketdata 14d, gap 365d, default 30d) trimmed
+  hourly by a background prune task.
+- **Lazy market-data subscriptions.** `/events/marketdata?conid=N`
+  ref-counts upstream `smd+<conid>+{}` subscriptions on first poll;
+  re-establishes them across WS reconnects.
+
+### Fixed
+
+- **`bezant-core::WsClient::connect` honours `accept_invalid_certs`.**
+  Previously the WS handshake used tokio-tungstenite's default rustls
+  verifier, which rejected the Gateway's expired self-signed cert
+  even when the underlying `Client` had opted into accepting it on
+  the REST side. The connector's reconnect loop would spin forever
+  on `verifyhostname`/`certificate expired` errors. Now `WsClient::
+  connect` reads `Client::accepts_invalid_certs()` and installs a
+  permissive rustls verifier when set, matching reqwest's behaviour.
+- **CPAPI subscribe-pre-ready quirk.** The events connector waits for
+  CPAPI's initial `system+success` "ready" frame before sending
+  `sor+{}`/`spl+{}` subscribes. Without this gate, subscribes sent
+  immediately after the WS handshake were silently discarded by
+  CPAPI and order/PnL frames never broadcast (only heartbeats). 5s
+  timeout falls through to a best-effort subscribe + warn so a
+  Gateway that never sends ready still tries.
+
 ## [0.3.0] — 2026-05-03
 
 The "polish before crates.io" release. v0.2 hardened the proxy and

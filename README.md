@@ -76,6 +76,11 @@ async fn main() -> bezant::Result<()> {
 - **Session keepalive** built in — no more 5-minute session expiries.
 - **WebSocket streaming** with cookie auth reused from the REST session
   and typed subscribe helpers for market data / orders / PnL.
+- **Events capture on `bezant-server`** (opt-in) — internal CPAPI WS
+  consumer + cursor-paginated `/events/*` REST surface, so polling
+  consumers in any language never miss an order/fill/PnL frame
+  between strategy ticks. Optional sqlite history with per-topic
+  retention.
 - **Enterprise-grade spec normalisation** (13 steps) works around real
   IBKR quirks — missing / duplicate `operationId`s, malformed
   `security[]`, integer fields with float example values, and more.

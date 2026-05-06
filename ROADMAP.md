@@ -69,6 +69,32 @@ Goal: library-quality ergonomics + production-debuggable runtime.
 - [x] **14 spec-normaliser invariant tests** + CI drift-check job
 - [x] **Published to crates.io** at v0.3.0
 
+## post-0.3 (unreleased) — events observability ✅ shipped (2026-05-06)
+
+Goal: capture every order, fill, rejection, PnL update, and (per-conid)
+market-data tick the upstream WebSocket sees, and expose them via
+cursor-paginated REST so polling consumers don't lose events between
+strategy ticks.
+
+- [x] **`bezant-server` events module** — internal `bezant::WsClient`
+      consumer with reconnect + heartbeat-timeout, per-topic ring
+      buffers (`orders`, `pnl`, `marketdata:<conid>`, `gap`),
+      `reset_epoch`/cursor wire semantics so clients can detect gaps
+- [x] **`/events/*` REST surface** — `orders`, `pnl`, `marketdata`,
+      `gap`, `_status` endpoints with 200 / 204 / 412 cursor outcomes
+- [x] **Lazy market-data subs** — `/events/marketdata?conid=N`
+      ref-counts upstream `smd+<conid>+{}` subscribes; re-establishes
+      across WS reconnects
+- [x] **Optional sqlite history** — `BEZANT_EVENTS_DB_PATH` mirrors
+      every captured event into `events(...)`, served via
+      `/events/{topic}/history?since_ts=…`. Per-topic retention with
+      hourly prune (orders/pnl 90d, marketdata 14d, gap 365d)
+- [x] **`WsClient::connect` honours `accept_invalid_certs`** — fixes
+      reconnect loop against the Gateway's expired self-signed cert
+- [x] **`pump_until_ready`** — waits for CPAPI's `system+success`
+      frame before subscribing; CPAPI silently drops pre-ready
+      subscribes
+
 ## v0.4 — feature flags + auto-reconnect 🔭 planned
 
 Goal: smooth out remaining rough edges; expand for non-Rust ecosystems.
