@@ -34,11 +34,22 @@ services:
       BEZANT_BIND: "0.0.0.0:8080"
       BEZANT_KEEPALIVE_SECS: "60"
       RUST_LOG: "bezant_server=info,bezant=info,tower_http=info"
+      # WS observability — captures order/PnL/market-data frames into
+      # ring buffers + sqlite, served via /events/*. Off by default upstream
+      # (preserves existing deploys) but on for dev compose so the surface
+      # is exercised end-to-end out of the box.
+      BEZANT_EVENTS_ENABLED: "true"
+      BEZANT_EVENTS_DB_PATH: "/data/events.db"
+    volumes:
+      - bezant-events:/data
     ports:
       - "127.0.0.1:8080:8080"
     restart: unless-stopped
     networks:
       - bezant
+
+volumes:
+  bezant-events:
 
 networks:
   bezant:
