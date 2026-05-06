@@ -351,6 +351,22 @@ impl ConnectorActor {
     /// otherwise. Caller handles backoff + reconnect.
     async fn connect_and_run(&mut self) -> Result<(), bezant::Error> {
         let mut ws = WsClient::connect(&self.client).await?;
+
+        // CPAPI WS quirk: subscribes sent *before* the server's initial
+        // `system+success` "ready" frame are silently discarded. Pump
+        // frames until that frame arrives (or 5s timeout) so our
+        // `sor`/`spl` subscribes actually take effect — without this,
+        // we get heartbeats forever and no order/PnL events.
+        let ready = timeout(Duration::from_secs(5), pump_until_ready(&mut ws)).await;
+        match ready {
+            Ok(Ok(())) => debug!("events connector: server ready signal received"),
+            Ok(Err(e)) => return Err(e),
+            Err(_) => warn!(
+                "events connector: didn't see server-ready frame within 5s; \
+                 subscribing anyway (CPAPI may silently drop these)"
+            ),
+        }
+
         ws.subscribe_orders().await?;
         ws.subscribe_pnl().await?;
         // Re-establish any market data subs that were active before the
@@ -589,6 +605,28 @@ impl ConnectorActor {
             .or_insert_with(|| TopicRing::new("gap", 256, new_epoch))
             .push(payload, now);
     }
+}
+
+/// Pump WS frames until we see a `system` topic frame containing
+/// `success` (CPAPI's username-ack — see the IBKR campus WS lesson).
+/// That frame indicates the server has finished session bootstrap and
+/// will accept and broadcast on `sor`/`spl` subscribes. Frames seen
+/// before the ready signal are discarded — they're just connection
+/// metadata (`act`, `sts`) we don't need to surface to consumers.
+async fn pump_until_ready(ws: &mut WsClient) -> Result<(), bezant::Error> {
+    while let Some(msg) = ws.next_message().await? {
+        if let WsMessage::System(value) = &msg {
+            if value.get("success").is_some() {
+                return Ok(());
+            }
+        }
+        // `act`, `sts`, anything else — ignore. We're only gating on
+        // the `success` ack which CPAPI sends once per session.
+    }
+    // Stream closed before we saw ready.
+    Err(bezant::Error::WsProtocol(
+        "ws closed before server-ready frame".into(),
+    ))
 }
 
 fn now_iso() -> String {
