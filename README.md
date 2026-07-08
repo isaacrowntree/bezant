@@ -92,6 +92,10 @@ async fn main() -> bezant::Result<()> {
   wiremock-mocked gateways.
 - **Dual MIT / Apache-2.0** licensing following the Rust ecosystem convention.
 
+## Built with bezant
+
+- **[sovereign-ibkr-fund](https://github.com/isaacrowntree/sovereign-ibkr-fund)** — an autonomous, multi-agent portfolio fund for Interactive Brokers. Deterministic TypeScript agents handle allocation (HRP / Black-Litterman), risk, tax, and execution, trading through bezant's HTTP surface and TypeScript client. *bezant mints the access; sovereign spends it.*
+
 <!-- ANCHOR: pi-cloudflare -->
 ## Production deployment: Cloudflare Zero Trust + Pi
 
