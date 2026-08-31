@@ -1,0 +1,3 @@
+# The TypeScript client is generated from the vendored OpenAPI spec
+# (155-path pipeline) — keep linguist stats on the hand-written Rust.
+clients/typescript/** linguist-generated
