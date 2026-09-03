@@ -16,4 +16,4 @@ mod state;
 pub use error::{AppError, ErrorBody};
 pub use events::{spawn_connector, ConnectorCfg, EventsHandle};
 pub use routes::router;
-pub use state::AppState;
+pub use state::{AppState, SsoBridge};

@@ -256,6 +256,20 @@ async fn passthrough_any(
     }
 
     let resp = builder.send().await.map_err(bezant::Error::Http)?;
+
+    // Watch the SSO bridge go past. This single call is the one whose failure
+    // means no login can EVER complete, and nothing else in the system could
+    // see it: /health, auth/status and the process table all look healthy
+    // while it 500s. On 2026-09-03 that hid a wedged Gateway for eleven hours
+    // and looked, from the outside, exactly like 2FA not working.
+    //
+    // Free to record here — the relogin service and the watchdog already route
+    // these calls through this proxy — and it turns a silent outage into a
+    // field anything can read. See AppState::record_sso_bridge.
+    if path_only.ends_with("/iserver/auth/ssodh/init") {
+        state.record_sso_bridge(resp.status().as_u16());
+    }
+
     forward(resp).await
 }
 
@@ -265,6 +279,26 @@ struct HealthBody {
     connected: bool,
     competing: bool,
     message: Option<String>,
+    /// Last observed state of the SSO bridge. Omitted until one has been seen.
+    ///
+    /// `authenticated:false` alone cannot distinguish "waiting for a human to
+    /// log in" from "cannot complete a login at all", and on 2026-09-03 that
+    /// ambiguity hid a wedged Gateway for eleven hours. This is the field that
+    /// tells them apart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sso_bridge: Option<SsoBridgeBody>,
+}
+
+#[derive(Debug, Serialize)]
+struct SsoBridgeBody {
+    /// HTTP status of the most recent `iserver/auth/ssodh/init`.
+    status: u16,
+    /// Unix seconds when that status was observed.
+    at: u64,
+    /// Consecutive 5xx responses. Non-zero means logins cannot complete.
+    consecutive_faults: u32,
+    /// True once the fault run is long enough to call the bridge wedged.
+    wedged: bool,
 }
 
 /// Diagnostic-only endpoint: lists shared cookie jar entries by name
@@ -721,6 +755,11 @@ fn skipped_step(
     })
 }
 
+/// Consecutive `ssodh/init` 5xx responses before `/health` calls it wedged.
+/// Deliberately small: the endpoint either works or it does not, and a run of
+/// three leaves no reasonable doubt.
+const SSO_WEDGED_AFTER: u32 = 3;
+
 #[tracing::instrument(skip_all)]
 async fn health(State(state): State<AppState>) -> Result<Json<HealthBody>, AppError> {
     let status = state.client().auth_status().await?;
@@ -729,6 +768,12 @@ async fn health(State(state): State<AppState>) -> Result<Json<HealthBody>, AppEr
         connected: status.connected,
         competing: status.competing,
         message: status.message,
+        sso_bridge: state.sso_bridge().map(|b| SsoBridgeBody {
+            status: b.status,
+            at: b.at,
+            consecutive_faults: b.consecutive_faults,
+            wedged: b.consecutive_faults >= SSO_WEDGED_AFTER,
+        }),
     }))
 }
 
@@ -1014,6 +1059,7 @@ async fn forward(resp: reqwest::Response) -> Result<Response<Body>, AppError> {
     };
 
     let body_is_empty = bytes.is_empty();
+
     let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
 
     let mut headers = HeaderMap::new();

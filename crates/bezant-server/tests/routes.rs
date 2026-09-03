@@ -80,6 +80,117 @@ async fn health_projects_gateway_auth_status() {
     assert_eq!(body["message"], json!("ready"));
 }
 
+/// The Gateway can be ALIVE AND WRONG, and `authenticated:false` cannot tell
+/// you which. On 2026-09-03 `iserver/auth/ssodh/init` — the SSO handshake that
+/// turns a completed browser login into a session — returned 500 for eleven
+/// hours. `/health`, `auth/status` and the process table all looked perfect
+/// throughout, so a fund that could not possibly log in looked merely
+/// logged out, and the symptom read as "2FA is broken". These pin the field
+/// that tells the two apart.
+#[tokio::test]
+async fn health_reports_a_wedged_sso_bridge() {
+    let gateway = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/api/iserver/auth/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "authenticated": false, "connected": false, "competing": false, "message": ""
+        })))
+        .mount(&gateway)
+        .await;
+    // The bridge itself: wedged, exactly as production was.
+    Mock::given(method("POST"))
+        .and(path("/v1/api/iserver/auth/ssodh/init"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+
+    // Nothing observed yet — the field must be ABSENT rather than guessing.
+    let (_, body) = response_body(
+        app.clone()
+            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body.get("sso_bridge"), None, "must not report what it has not seen");
+
+    // Drive the bridge through the proxy three times, as relogin and the
+    // watchdog both do, and the observation should accumulate.
+    for _ in 0..3 {
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/api/iserver/auth/ssodh/init")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let (status, body) = response_body(
+        app.oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["sso_bridge"]["status"], json!(500));
+    assert_eq!(body["sso_bridge"]["consecutive_faults"], json!(3));
+    assert_eq!(
+        body["sso_bridge"]["wedged"],
+        json!(true),
+        "three 5xx in a row is the whole signal that no login can complete"
+    );
+}
+
+/// 401 is the HEALTHY answer before anyone has logged in. Counting it as a
+/// fault would make every logged-out fund look wedged, and an auto-restart
+/// built on that would bounce the container forever.
+#[tokio::test]
+async fn health_treats_a_401_bridge_as_healthy() {
+    let gateway = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/api/iserver/auth/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "authenticated": false, "connected": false, "competing": false, "message": ""
+        })))
+        .mount(&gateway)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/api/iserver/auth/ssodh/init"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/api/iserver/auth/ssodh/init")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let (_, body) = response_body(
+        app.oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["sso_bridge"]["status"], json!(401));
+    assert_eq!(body["sso_bridge"]["consecutive_faults"], json!(0));
+    assert_eq!(body["sso_bridge"]["wedged"], json!(false));
+}
+
 #[tokio::test]
 async fn health_maps_unauthorized_to_401_with_code() {
     let gateway = MockServer::start().await;
