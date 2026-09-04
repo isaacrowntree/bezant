@@ -148,6 +148,105 @@ async fn health_reports_a_wedged_sso_bridge() {
     );
 }
 
+/// `/health/sso` must answer 200 in EVERY state, which is the whole reason it
+/// exists separately from `/health`.
+///
+/// `/health` has two shapes: 200 with `authenticated:false`, or 401 with
+/// `code:not_authenticated` when the Gateway's own `auth/status` 401s. The
+/// bridge field was originally only on the 200 body, so it vanished in exactly
+/// the half of "logged out" where a wedge is most likely to be sitting. A
+/// diagnostic you cannot read in the failure state is not a diagnostic.
+#[tokio::test]
+async fn sso_endpoint_answers_200_even_when_health_is_401() {
+    let gateway = MockServer::start().await;
+    // The Gateway refuses auth/status outright — this is the shape that hid
+    // the field before.
+    Mock::given(method("POST"))
+        .and(path("/v1/api/iserver/auth/status"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&gateway)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/api/iserver/auth/ssodh/init"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+
+    // /health is 401 here: the state where the old field was invisible.
+    let (health_status, _) = response_body(
+        app.clone()
+            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(health_status, StatusCode::UNAUTHORIZED);
+
+    for _ in 0..3 {
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/api/iserver/auth/ssodh/init")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let (status, body) = response_body(
+        app.oneshot(
+            Request::builder()
+                .uri("/health/sso")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "must answer even when /health cannot");
+    assert_eq!(body["observed"], json!(true));
+    assert_eq!(body["status"], json!(500));
+    assert_eq!(body["consecutive_faults"], json!(3));
+    assert_eq!(body["wedged"], json!(true));
+}
+
+/// Never seen a bridge call: say so, rather than implying health.
+#[tokio::test]
+async fn sso_endpoint_reports_when_nothing_has_been_observed() {
+    let gateway = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/api/iserver/auth/status"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&gateway)
+        .await;
+
+    let app = make_app(&gateway).await;
+    let (status, body) = response_body(
+        app.oneshot(
+            Request::builder()
+                .uri("/health/sso")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["observed"], json!(false));
+    assert_eq!(
+        body["wedged"],
+        json!(false),
+        "unknown must never read as wedged, or a restart could fire on no evidence"
+    );
+}
+
 /// 401 is the HEALTHY answer before anyone has logged in. Counting it as a
 /// fault would make every logged-out fund look wedged, and an auto-restart
 /// built on that would bounce the container forever.

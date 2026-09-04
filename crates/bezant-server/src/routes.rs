@@ -26,6 +26,7 @@ use crate::state::AppState;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/health/sso", get(health_sso))
         .route("/debug/jar", get(debug_jar))
         .route("/debug/probe", get(debug_probe))
         .route("/accounts", get(accounts))
@@ -287,6 +288,29 @@ struct HealthBody {
     /// tells them apart.
     #[serde(skip_serializing_if = "Option::is_none")]
     sso_bridge: Option<SsoBridgeBody>,
+}
+
+/// Body of `/health/sso`. Always 200, in every state.
+///
+/// `/health` cannot carry this reliably: it answers 200 with
+/// `authenticated:false` in one flavour of logged-out and 401 with
+/// `code:not_authenticated` in the other, and a field on the success body
+/// disappears in the second — which is precisely where a wedged bridge is
+/// likely to be sitting. Rather than grow the shared `ErrorBody` a
+/// feature-specific field, the diagnostic gets its own endpoint that cannot
+/// fail.
+#[derive(Debug, Serialize)]
+struct SsoStatusBody {
+    /// False when no bridge call has passed through yet. Distinguished from a
+    /// healthy bridge on purpose: "no evidence" and "evidence of health" are
+    /// different answers, and only one of them should ever justify acting.
+    observed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    at: Option<u64>,
+    consecutive_faults: u32,
+    wedged: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -759,6 +783,28 @@ fn skipped_step(
 /// Deliberately small: the endpoint either works or it does not, and a run of
 /// three leaves no reasonable doubt.
 const SSO_WEDGED_AFTER: u32 = 3;
+
+/// Read the SSO bridge state. Never fails, never probes — it reports what has
+/// already gone past the proxy. See [`SsoStatusBody`].
+#[tracing::instrument(skip_all)]
+async fn health_sso(State(state): State<AppState>) -> Json<SsoStatusBody> {
+    Json(state.sso_bridge().map_or(
+        SsoStatusBody {
+            observed: false,
+            status: None,
+            at: None,
+            consecutive_faults: 0,
+            wedged: false,
+        },
+        |b| SsoStatusBody {
+            observed: true,
+            status: Some(b.status),
+            at: Some(b.at),
+            consecutive_faults: b.consecutive_faults,
+            wedged: b.consecutive_faults >= SSO_WEDGED_AFTER,
+        },
+    ))
+}
 
 #[tracing::instrument(skip_all)]
 async fn health(State(state): State<AppState>) -> Result<Json<HealthBody>, AppError> {
