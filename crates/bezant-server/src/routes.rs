@@ -1198,7 +1198,7 @@ fn is_hop_by_hop_response(name: &str) -> bool {
     )
 }
 
-/// Replace the scheme + host[:port] prefix of `original` with
+/// Replace the scheme + host\[:port\] prefix of `original` with
 /// `new_origin`, preserving path + query. Used to rewrite the Referer
 /// header on `/v1/api/*` requests when the proxy lives on a different
 /// host than the Gateway.
@@ -1335,17 +1335,11 @@ async fn events_orders(
     read_events_topic(&state, "orders", q).await
 }
 
-async fn events_pnl(
-    State(state): State<AppState>,
-    Query(q): Query<EventsQuery>,
-) -> Response<Body> {
+async fn events_pnl(State(state): State<AppState>, Query(q): Query<EventsQuery>) -> Response<Body> {
     read_events_topic(&state, "pnl", q).await
 }
 
-async fn events_gap(
-    State(state): State<AppState>,
-    Query(q): Query<EventsQuery>,
-) -> Response<Body> {
+async fn events_gap(State(state): State<AppState>, Query(q): Query<EventsQuery>) -> Response<Body> {
     read_events_topic(&state, "gap", q).await
 }
 
@@ -1423,14 +1417,13 @@ async fn events_history(
         )
             .into_response();
     };
-    let limit = q.limit.min(5_000).max(1);
+    let limit = q.limit.clamp(1, 5_000);
     let log_clone = log.clone();
     let topic_clone = topic.clone();
     let since_ts = q.since_ts.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        log_clone.query_since(&topic_clone, &since_ts, limit)
-    })
-    .await;
+    let result =
+        tokio::task::spawn_blocking(move || log_clone.query_since(&topic_clone, &since_ts, limit))
+            .await;
     match result {
         Ok(Ok(events)) => {
             let body = serde_json::json!({
@@ -1487,7 +1480,10 @@ async fn read_events_topic_resolved(
 
     use crate::events::ReadResult;
     match result {
-        ReadResult::Ok { events, next_cursor } => {
+        ReadResult::Ok {
+            events,
+            next_cursor,
+        } => {
             if events.is_empty() {
                 // No new events — 204 to make "nothing happened" cheap to
                 // detect on the client side without parsing a body.
@@ -1501,10 +1497,7 @@ async fn read_events_topic_resolved(
                 }
                 return response;
             }
-            let reset_epoch = events
-                .first()
-                .map(|e| e.reset_epoch)
-                .unwrap_or_else(|| 0);
+            let reset_epoch = events.first().map(|e| e.reset_epoch).unwrap_or_else(|| 0);
             let body = serde_json::json!({
                 "events": events,
                 "next_cursor": next_cursor,
@@ -1520,8 +1513,7 @@ async fn read_events_topic_resolved(
                 code: "cursor_expired",
                 head_cursor,
                 reset_epoch,
-                message:
-                    "the requested cursor is older than the oldest buffered event; \
+                message: "the requested cursor is older than the oldest buffered event; \
                      reset to head_cursor and emit a synthetic gap on the consumer side",
             };
             (StatusCode::PRECONDITION_FAILED, Json(body)).into_response()

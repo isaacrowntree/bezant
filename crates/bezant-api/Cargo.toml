@@ -36,10 +36,10 @@ bezant-spec = { path = "../bezant-spec", version = "0.3.0" }
 # Runtime dependencies the generated client expects.
 anyhow = "1"
 http = "1"
-oas3-gen-support = "0.25"
+oas3-gen-support = "0.28"
 reqwest = { workspace = true, features = ["multipart"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = "3"
-validator = { version = "0.20", features = ["derive"] }
+validator = { version = "0.21", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }

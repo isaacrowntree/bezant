@@ -465,7 +465,8 @@ fn permissive_tls_connector() -> tokio_tungstenite::Connector {
             _server_name: &rustls_pki_types::ServerName<'_>,
             _ocsp: &[u8],
             _now: rustls_pki_types::UnixTime,
-        ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error>
+        {
             Ok(rustls::client::danger::ServerCertVerified::assertion())
         }
         fn verify_tls12_signature(
@@ -473,7 +474,8 @@ fn permissive_tls_connector() -> tokio_tungstenite::Connector {
             _message: &[u8],
             _cert: &rustls_pki_types::CertificateDer<'_>,
             _dss: &rustls::DigitallySignedStruct,
-        ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
+        {
             Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
         }
         fn verify_tls13_signature(
@@ -481,7 +483,8 @@ fn permissive_tls_connector() -> tokio_tungstenite::Connector {
             _message: &[u8],
             _cert: &rustls_pki_types::CertificateDer<'_>,
             _dss: &rustls::DigitallySignedStruct,
-        ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
+        {
             Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
         }
         fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {

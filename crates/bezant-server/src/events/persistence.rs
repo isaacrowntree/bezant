@@ -27,7 +27,7 @@
 //! - `marketdata:*` — 14 days (high volume; bigger window doesn't pay)
 //! - `gap`        — 365 days (low volume, useful forever)
 //!
-//! [`EventLog::prune_older_than`] is intended to be called from a
+//! [`EventLog::prune`] is intended to be called from a
 //! once-an-hour task; nothing in the read path waits on it.
 
 use std::path::{Path, PathBuf};
@@ -48,7 +48,9 @@ pub struct EventLog {
 
 impl std::fmt::Debug for EventLog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EventLog").field("path", &self.path).finish()
+        f.debug_struct("EventLog")
+            .field("path", &self.path)
+            .finish()
     }
 }
 
@@ -185,25 +187,22 @@ impl EventLog {
              FROM events WHERE topic = ?1 AND received_at > ?2 \
              ORDER BY received_at ASC LIMIT ?3",
         )?;
-        let rows = stmt.query_map(
-            params![topic, since_ts, limit as i64],
-            |row| {
-                let cursor: i64 = row.get(0)?;
-                let topic: String = row.get(1)?;
-                let received_at: String = row.get(2)?;
-                let reset_epoch: i64 = row.get(3)?;
-                let payload_str: String = row.get(4)?;
-                let payload: serde_json::Value = serde_json::from_str(&payload_str)
-                    .unwrap_or(serde_json::Value::Null);
-                Ok(ObservedEvent {
-                    cursor: cursor as u64,
-                    topic,
-                    received_at,
-                    reset_epoch: reset_epoch as u64,
-                    payload,
-                })
-            },
-        )?;
+        let rows = stmt.query_map(params![topic, since_ts, limit as i64], |row| {
+            let cursor: i64 = row.get(0)?;
+            let topic: String = row.get(1)?;
+            let received_at: String = row.get(2)?;
+            let reset_epoch: i64 = row.get(3)?;
+            let payload_str: String = row.get(4)?;
+            let payload: serde_json::Value =
+                serde_json::from_str(&payload_str).unwrap_or(serde_json::Value::Null);
+            Ok(ObservedEvent {
+                cursor: cursor as u64,
+                topic,
+                received_at,
+                reset_epoch: reset_epoch as u64,
+                payload,
+            })
+        })?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
@@ -268,11 +267,15 @@ mod tests {
     #[test]
     fn append_and_query_round_trip() {
         let log = EventLog::open_in_memory().unwrap();
-        log.append(&evt(1, "orders", "2026-05-06T13:30:00Z")).unwrap();
-        log.append(&evt(2, "orders", "2026-05-06T13:31:00Z")).unwrap();
+        log.append(&evt(1, "orders", "2026-05-06T13:30:00Z"))
+            .unwrap();
+        log.append(&evt(2, "orders", "2026-05-06T13:31:00Z"))
+            .unwrap();
         log.append(&evt(3, "pnl", "2026-05-06T13:32:00Z")).unwrap();
 
-        let orders = log.query_since("orders", "1970-01-01T00:00:00Z", 100).unwrap();
+        let orders = log
+            .query_since("orders", "1970-01-01T00:00:00Z", 100)
+            .unwrap();
         assert_eq!(orders.len(), 2);
         assert_eq!(orders[0].cursor, 1);
         assert_eq!(orders[1].cursor, 2);
@@ -285,11 +288,16 @@ mod tests {
     #[test]
     fn query_filters_by_since_ts() {
         let log = EventLog::open_in_memory().unwrap();
-        log.append(&evt(1, "orders", "2026-05-06T13:30:00Z")).unwrap();
-        log.append(&evt(2, "orders", "2026-05-06T13:31:00Z")).unwrap();
-        log.append(&evt(3, "orders", "2026-05-06T13:32:00Z")).unwrap();
+        log.append(&evt(1, "orders", "2026-05-06T13:30:00Z"))
+            .unwrap();
+        log.append(&evt(2, "orders", "2026-05-06T13:31:00Z"))
+            .unwrap();
+        log.append(&evt(3, "orders", "2026-05-06T13:32:00Z"))
+            .unwrap();
 
-        let recent = log.query_since("orders", "2026-05-06T13:30:30Z", 100).unwrap();
+        let recent = log
+            .query_since("orders", "2026-05-06T13:30:30Z", 100)
+            .unwrap();
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].cursor, 2);
     }
@@ -301,7 +309,9 @@ mod tests {
             let ts = format!("2026-05-06T13:{:02}:00Z", 30 + i);
             log.append(&evt(i, "orders", &ts)).unwrap();
         }
-        let result = log.query_since("orders", "1970-01-01T00:00:00Z", 3).unwrap();
+        let result = log
+            .query_since("orders", "1970-01-01T00:00:00Z", 3)
+            .unwrap();
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].cursor, 1);
     }

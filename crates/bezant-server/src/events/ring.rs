@@ -125,14 +125,10 @@ impl TopicRing {
             // Evict oldest. head_cursor moves to whatever's now the
             // oldest still-buffered event's cursor.
             let evicted = self.inner.pop_front();
-            if let Some(_) = evicted {
+            if evicted.is_some() {
                 // After eviction the new oldest is whatever's at front
                 // (or, if empty, the cursor we're about to push).
-                self.head_cursor = self
-                    .inner
-                    .front()
-                    .map(|e| e.cursor)
-                    .unwrap_or(cursor);
+                self.head_cursor = self.inner.front().map(|e| e.cursor).unwrap_or(cursor);
             }
         }
 
@@ -183,7 +179,10 @@ impl TopicRing {
             .map(|e| e.cursor)
             .unwrap_or_else(|| self.next_cursor.saturating_sub(1));
 
-        ReadResult::Ok { events, next_cursor }
+        ReadResult::Ok {
+            events,
+            next_cursor,
+        }
     }
 }
 
@@ -213,7 +212,10 @@ mod tests {
         ring.push(json!({"n": 1}), ts());
         ring.push(json!({"n": 2}), ts());
         match ring.read_since(0, 100) {
-            ReadResult::Ok { events, next_cursor } => {
+            ReadResult::Ok {
+                events,
+                next_cursor,
+            } => {
                 assert_eq!(events.len(), 2);
                 assert_eq!(next_cursor, 2);
                 assert_eq!(events[0].payload, json!({"n": 1}));
@@ -230,7 +232,10 @@ mod tests {
         ring.push(json!({"n": 2}), ts());
         ring.push(json!({"n": 3}), ts());
         match ring.read_since(1, 100) {
-            ReadResult::Ok { events, next_cursor } => {
+            ReadResult::Ok {
+                events,
+                next_cursor,
+            } => {
                 assert_eq!(events.len(), 2);
                 assert_eq!(events[0].cursor, 2);
                 assert_eq!(events[1].cursor, 3);
@@ -246,7 +251,10 @@ mod tests {
         ring.push(json!({"n": 1}), ts());
         ring.push(json!({"n": 2}), ts());
         match ring.read_since(2, 100) {
-            ReadResult::Ok { events, next_cursor } => {
+            ReadResult::Ok {
+                events,
+                next_cursor,
+            } => {
                 assert!(events.is_empty());
                 assert_eq!(next_cursor, 2);
             }
@@ -261,7 +269,10 @@ mod tests {
             ring.push(json!({ "n": i }), ts());
         }
         match ring.read_since(0, 10) {
-            ReadResult::Ok { events, next_cursor } => {
+            ReadResult::Ok {
+                events,
+                next_cursor,
+            } => {
                 assert_eq!(events.len(), 10);
                 assert_eq!(next_cursor, 10);
             }
@@ -294,7 +305,10 @@ mod tests {
         }
         // Asking from head-1 (cursor 2) is OK — we still have cursor 3.
         match ring.read_since(2, 100) {
-            ReadResult::Ok { events, next_cursor } => {
+            ReadResult::Ok {
+                events,
+                next_cursor,
+            } => {
                 assert_eq!(events.len(), 3);
                 assert_eq!(events[0].cursor, 3);
                 assert_eq!(next_cursor, 5);
@@ -350,7 +364,10 @@ mod tests {
     fn empty_ring_read_since_zero_is_ok_empty() {
         let ring = TopicRing::new("orders", 10, 0);
         match ring.read_since(0, 100) {
-            ReadResult::Ok { events, next_cursor } => {
+            ReadResult::Ok {
+                events,
+                next_cursor,
+            } => {
                 assert!(events.is_empty());
                 assert_eq!(next_cursor, 0);
             }

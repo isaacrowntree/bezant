@@ -190,12 +190,11 @@ impl Client {
                 body_preview: None,
             });
         }
-        let payload: bezant_api::TickleResponse =
-            resp.json().await.map_err(|e| Error::Decode {
-                endpoint: format!("POST {url}"),
-                status: status.as_u16(),
-                message: e.to_string(),
-            })?;
+        let payload: bezant_api::TickleResponse = resp.json().await.map_err(|e| Error::Decode {
+            endpoint: format!("POST {url}"),
+            status: status.as_u16(),
+            message: e.to_string(),
+        })?;
         let session = match &payload {
             bezant_api::TickleResponse::Successful(s) => s.session.clone(),
             bezant_api::TickleResponse::Failed(_) => None,

@@ -109,12 +109,21 @@ async fn health_reports_a_wedged_sso_bridge() {
     // Nothing observed yet — the field must be ABSENT rather than guessing.
     let (_, body) = response_body(
         app.clone()
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap(),
     )
     .await;
-    assert_eq!(body.get("sso_bridge"), None, "must not report what it has not seen");
+    assert_eq!(
+        body.get("sso_bridge"),
+        None,
+        "must not report what it has not seen"
+    );
 
     // Drive the bridge through the proxy three times, as relogin and the
     // watchdog both do, and the observation should accumulate.
@@ -133,9 +142,14 @@ async fn health_reports_a_wedged_sso_bridge() {
     }
 
     let (status, body) = response_body(
-        app.oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
-            .await
-            .unwrap(),
+        app.oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap(),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -177,7 +191,12 @@ async fn sso_endpoint_answers_200_even_when_health_is_401() {
     // /health is 401 here: the state where the old field was invisible.
     let (health_status, _) = response_body(
         app.clone()
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap(),
     )
@@ -209,7 +228,11 @@ async fn sso_endpoint_answers_200_even_when_health_is_401() {
         .unwrap(),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "must answer even when /health cannot");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "must answer even when /health cannot"
+    );
     assert_eq!(body["observed"], json!(true));
     assert_eq!(body["status"], json!(500));
     assert_eq!(body["consecutive_faults"], json!(3));
@@ -280,9 +303,14 @@ async fn health_treats_a_401_bridge_as_healthy() {
         .unwrap();
 
     let (_, body) = response_body(
-        app.oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
-            .await
-            .unwrap(),
+        app.oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap(),
     )
     .await;
     assert_eq!(body["sso_bridge"]["status"], json!(401));

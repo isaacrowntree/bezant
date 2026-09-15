@@ -72,7 +72,12 @@ async fn response_body(resp: axum::http::Response<Body>) -> (StatusCode, Value) 
 async fn events_disabled_when_handle_not_attached() {
     let app = make_app_without_events().await;
     let resp = app
-        .oneshot(Request::builder().uri("/events/orders").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/events/orders")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let (status, body) = response_body(resp).await;
@@ -84,7 +89,12 @@ async fn events_disabled_when_handle_not_attached() {
 async fn events_status_returns_disconnected_envelope_initially() {
     let (app, _sink) = make_app_with_events().await;
     let resp = app
-        .oneshot(Request::builder().uri("/events/_status").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/events/_status")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let (status, body) = response_body(resp).await;
@@ -102,7 +112,12 @@ async fn events_status_returns_disconnected_envelope_initially() {
 async fn events_orders_empty_returns_200_with_empty_array() {
     let (app, _sink) = make_app_with_events().await;
     let resp = app
-        .oneshot(Request::builder().uri("/events/orders?since=0").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/events/orders?since=0")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let (status, body) = response_body(resp).await;
@@ -116,12 +131,19 @@ async fn events_orders_empty_returns_200_with_empty_array() {
 #[tokio::test]
 async fn events_orders_returns_pushed_events() {
     let (app, sink) = make_app_with_events().await;
-    sink.push("orders", json!({"orderId": 12345, "status": "Filled"})).await;
-    sink.push("orders", json!({"orderId": 12346, "status": "Working"})).await;
+    sink.push("orders", json!({"orderId": 12345, "status": "Filled"}))
+        .await;
+    sink.push("orders", json!({"orderId": 12346, "status": "Working"}))
+        .await;
 
     let resp = app
         .clone()
-        .oneshot(Request::builder().uri("/events/orders?since=0").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/events/orders?since=0")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let (status, body) = response_body(resp).await;
@@ -141,7 +163,12 @@ async fn events_orders_advances_cursor() {
 
     let resp = app
         .clone()
-        .oneshot(Request::builder().uri("/events/orders?since=1").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/events/orders?since=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let (status, body) = response_body(resp).await;
@@ -160,7 +187,12 @@ async fn events_orders_caught_up_returns_204() {
 
     let resp = app
         .clone()
-        .oneshot(Request::builder().uri("/events/orders?since=1").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/events/orders?since=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
@@ -198,7 +230,12 @@ async fn events_orders_status_subscribed_topics_grow() {
     sink.push("pnl", json!({"upnl": 10.0})).await;
 
     let resp = app
-        .oneshot(Request::builder().uri("/events/_status").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/events/_status")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let (_status, body) = response_body(resp).await;
@@ -215,7 +252,12 @@ async fn events_pnl_endpoint_returns_pnl_topic() {
     sink.push("pnl", json!({"unrealizedUsd": 125.34})).await;
 
     let resp = app
-        .oneshot(Request::builder().uri("/events/pnl?since=0").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/events/pnl?since=0")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let (status, body) = response_body(resp).await;
@@ -231,7 +273,12 @@ async fn events_envelope_includes_reset_epoch() {
     sink.push("orders", json!({"id": 1})).await;
 
     let resp = app
-        .oneshot(Request::builder().uri("/events/orders?since=0").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/events/orders?since=0")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let (status, body) = response_body(resp).await;
@@ -260,8 +307,10 @@ async fn events_history_returns_503_without_log() {
 #[tokio::test]
 async fn events_history_returns_persisted_events() {
     let (app, sink, _log) = make_app_with_log().await;
-    sink.push("orders", json!({"id": 1, "status": "Filled"})).await;
-    sink.push("orders", json!({"id": 2, "status": "Filled"})).await;
+    sink.push("orders", json!({"id": 1, "status": "Filled"}))
+        .await;
+    sink.push("orders", json!({"id": 2, "status": "Filled"}))
+        .await;
     sink.push("pnl", json!({"upnl": 100})).await;
 
     let resp = app

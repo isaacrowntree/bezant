@@ -178,8 +178,7 @@ impl EventsHandle {
     #[doc(hidden)]
     #[must_use]
     pub fn for_test_with_log(event_log: Option<Arc<EventLog>>) -> (Self, TestSink) {
-        let rings: Arc<RwLock<HashMap<String, TopicRing>>> =
-            Arc::new(RwLock::new(HashMap::new()));
+        let rings: Arc<RwLock<HashMap<String, TopicRing>>> = Arc::new(RwLock::new(HashMap::new()));
         let status = Arc::new(RwLock::new(StatusState {
             connected: true,
             reset_epoch: 1,
@@ -194,7 +193,11 @@ impl EventsHandle {
             started_at,
             event_log: event_log.clone(),
         };
-        let sink = TestSink { rings, status, event_log };
+        let sink = TestSink {
+            rings,
+            status,
+            event_log,
+        };
         (handle, sink)
     }
 }
@@ -469,7 +472,10 @@ impl ConnectorActor {
             // surface as unstructured "other" data so we don't silently
             // drop them.
             other => {
-                debug!(topic = other.topic(), "events connector: unhandled ws message variant");
+                debug!(
+                    topic = other.topic(),
+                    "events connector: unhandled ws message variant"
+                );
                 self.touch_last_message(now).await;
             }
         }
@@ -485,7 +491,8 @@ impl ConnectorActor {
                         .await;
                     match result {
                         Ok(_) => {
-                            self.add_topic_to_status(format!("marketdata:{conid}")).await;
+                            self.add_topic_to_status(format!("marketdata:{conid}"))
+                                .await;
                             let _ = reply.send(Ok(()));
                         }
                         Err(e) => {
@@ -665,7 +672,9 @@ mod tests {
         actor
             .handle_frame(WsMessage::Order(json!({"orderId": 1})))
             .await;
-        actor.handle_frame(WsMessage::Pnl(json!({"upnl": 1.0}))).await;
+        actor
+            .handle_frame(WsMessage::Pnl(json!({"upnl": 1.0})))
+            .await;
         actor
             .handle_frame(WsMessage::MarketData {
                 conid: 265598,
@@ -693,7 +702,9 @@ mod tests {
         };
 
         actor.handle_frame(WsMessage::Heartbeat).await;
-        actor.handle_frame(WsMessage::System(json!({"msg": "ready"}))).await;
+        actor
+            .handle_frame(WsMessage::System(json!({"msg": "ready"})))
+            .await;
 
         let rings = actor.rings.read().await;
         assert!(rings.is_empty());
@@ -716,7 +727,9 @@ mod tests {
             active_marketdata_subs: BTreeSet::new(),
         };
 
-        actor.bump_epoch_with_gap(GapReason::ReconnectedAfterDisconnect).await;
+        actor
+            .bump_epoch_with_gap(GapReason::ReconnectedAfterDisconnect)
+            .await;
 
         // No gap event injected on first boot.
         let rings = actor.rings.read().await;
@@ -741,7 +754,9 @@ mod tests {
         // Seed an order event so the actor knows about the orders topic.
         actor.handle_frame(WsMessage::Order(json!({"id": 1}))).await;
         // Now bump epoch as if we'd reconnected.
-        actor.bump_epoch_with_gap(GapReason::ReconnectedAfterDisconnect).await;
+        actor
+            .bump_epoch_with_gap(GapReason::ReconnectedAfterDisconnect)
+            .await;
 
         let rings = actor.rings.read().await;
         let orders_ring = rings.get("orders").unwrap();

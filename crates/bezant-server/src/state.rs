@@ -95,7 +95,13 @@ impl AppState {
             // Carry the observation across, rather than resetting it: this is
             // called during startup wiring and a fault seen before the events
             // handle attaches is still a fault.
-            sso_bridge: std::sync::Mutex::new(*self.inner.sso_bridge.lock().unwrap_or_else(|e| e.into_inner())),
+            sso_bridge: std::sync::Mutex::new(
+                *self
+                    .inner
+                    .sso_bridge
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()),
+            ),
             debug_token: self.inner.debug_token.clone(),
             events: Some(events),
         };
