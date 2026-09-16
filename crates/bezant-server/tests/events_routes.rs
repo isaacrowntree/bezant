@@ -105,6 +105,11 @@ async fn events_status_returns_disconnected_envelope_initially() {
     assert!(body.get("reset_epoch").is_some());
     assert!(body.get("topics_subscribed").is_some());
     assert!(body.get("buffer_sizes").is_some());
+    // What CPAPI honoured, as distinct from what we asked for — the field a
+    // fill confirmer reads to know whether waiting on `orders` is pointless.
+    assert!(body.get("subscriptions").is_some());
+    assert_eq!(body["subscribe_refusals"], json!(0));
+    assert_eq!(body["session_rollovers"], json!(0));
     assert!(body.get("uptime_seconds").is_some());
 }
 

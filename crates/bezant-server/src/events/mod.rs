@@ -71,6 +71,32 @@ pub struct EventsStatus {
     /// Per-topic ring buffer occupancy. Useful for "are we close to
     /// wraparound?" capacity planning.
     pub buffer_sizes: BTreeMap<String, usize>,
+    /// Whether CPAPI has actually honoured each standing subscription
+    /// (`orders`, `pnl`). `topics_subscribed` above records what we ASKED
+    /// for; this records what we GOT. The difference is the whole story of
+    /// a fill that never arrived: CPAPI answers `sor+{}` with
+    /// `{"error":"unable to subscribe"}` more often than not, and a socket
+    /// that outlives a Gateway re-login keeps heartbeating with every
+    /// subscription dead. A consumer confirming fills should treat anything
+    /// but `subscribed` on `orders` as "the stream will not tell you".
+    pub subscriptions: BTreeMap<String, SubscriptionState>,
+    /// How many subscribe refusals CPAPI has sent since the process started.
+    pub subscribe_refusals: u64,
+    /// How many times the connector tore its socket down because the
+    /// Gateway's session id changed underneath it (a re-login).
+    pub session_rollovers: u64,
+}
+
+/// Where a standing subscription (`orders`, `pnl`) stands at the upstream WS.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionState {
+    /// Subscribe sent; CPAPI has neither honoured nor refused it yet.
+    Pending,
+    /// CPAPI has sent at least one real frame on the topic this connection.
+    Subscribed,
+    /// CPAPI answered the subscribe with an error; the connector is retrying.
+    Refused,
 }
 
 /// Reason a synthetic [`ObservedEvent`] of topic `"gap"` was injected.

@@ -53,6 +53,10 @@ pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 #[derive(Debug)]
 pub struct WsClient {
     stream: WsStream,
+    /// The Gateway session this socket was opened under (the `/tickle`
+    /// session id). A re-login mints a new one; a socket still bound to the
+    /// old one keeps heartbeating but its subscriptions are dead.
+    session: String,
 }
 
 /// Concrete name for the sink half of [`WsClient::split`] — what
@@ -275,7 +279,15 @@ impl WsClient {
                 })?
         };
 
-        Ok(Self { stream })
+        Ok(Self { stream, session })
+    }
+
+    /// The Gateway session id this socket was opened under. Compare with a
+    /// fresh [`Client::tickle`] to detect that the Gateway has re-logged in
+    /// underneath the socket.
+    #[must_use]
+    pub fn session(&self) -> &str {
+        &self.session
     }
 
     /// Subscribe to level-1 market data for a single contract id. Use

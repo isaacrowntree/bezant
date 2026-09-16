@@ -30,6 +30,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The events connector now survives the two ways CPAPI kills a stream
+  without closing it.** A `sor+{}` answered with
+  `{"error":"unable to subscribe","code":500}` used to be filed as an order
+  event and never retried — the socket then lived for days with `pnl`
+  flowing and `orders` dead, so fills never reached consumers. The refusal
+  is now a control frame: the topic is marked `refused` in `/events/status`
+  (`subscriptions`, alongside the new `subscribe_refusals` and
+  `session_rollovers` counters) and resubscribed with backoff (5s → 5m),
+  primed by `GET /iserver/accounts`. Separately, a Gateway re-login mints a
+  new session while the old socket keeps heartbeating; the connector now
+  compares the socket's session id against `/tickle` every 60s and
+  reconnects when it changes. `WsClient::session()` exposes the id.
+
 - **`bezant-core::WsClient::connect` honours `accept_invalid_certs`.**
   Previously the WS handshake used tokio-tungstenite's default rustls
   verifier, which rejected the Gateway's expired self-signed cert

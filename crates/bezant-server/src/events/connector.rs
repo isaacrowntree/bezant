@@ -11,6 +11,24 @@
 //! 4. On any disconnect: bump `reset_epoch`, push a synthetic `gap` event
 //!    into every active ring, sleep with backoff, GOTO 1.
 //!
+//! Two things CPAPI does that the loop above did not survive, and now does:
+//!
+//! - It REFUSES a subscribe. `sor+{}` is answered with
+//!   `{"error":"unable to subscribe","code":500,"topic":"sor"}` on most
+//!   reconnects (17 of 20 attempts over Aug–Sep 2026 on one Gateway). That
+//!   frame used to be filed as an order event and the subscribe was never
+//!   retried, so the socket stayed up for days with `pnl` flowing and
+//!   `orders` dead. A refusal is now a control frame: it marks the topic
+//!   [`SubscriptionState::Refused`] and schedules a resubscribe with
+//!   backoff, primed by `GET /iserver/accounts` (the call CPAPI documents
+//!   as the precondition for order queries).
+//! - It re-logs in underneath the socket. The Gateway's nightly re-auth,
+//!   or an assisted re-login, mints a new session; a socket bound to the
+//!   old one keeps heartbeating — so the heartbeat timeout never fires —
+//!   while every subscription on it is dead. The connector now compares
+//!   the socket's session id against `/tickle` periodically and reconnects
+//!   when it changes.
+//!
 //! [`EventsHandle`] is what axum handlers get. Cloneable, cheap, exposes
 //! reads against the rings and a command channel into the actor task.
 
@@ -21,12 +39,12 @@ use std::time::{Duration, Instant};
 use bezant::{MarketDataFields, WsClient, WsMessage};
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot, RwLock};
-use tokio::time::{sleep, timeout};
+use tokio::time::{sleep, sleep_until, timeout, Instant as TokioInstant};
 use tracing::{debug, info, warn};
 
 use super::persistence::{EventLog, RetentionPolicy};
 use super::ring::{ReadResult, TopicRing};
-use super::{EventsStatus, GapReason, ObservedEvent};
+use super::{EventsStatus, GapReason, ObservedEvent, SubscriptionState};
 
 /// Configurable knobs for the connector.
 #[derive(Clone, Debug)]
@@ -56,6 +74,15 @@ pub struct ConnectorCfg {
     pub retention: RetentionPolicy,
     /// How often to run the prune task. Defaults to once per hour.
     pub prune_every: Duration,
+    /// First retry delay after CPAPI refuses a standing subscription.
+    pub resubscribe_min: Duration,
+    /// Retry delay ceiling. A `sor+{}` every five minutes is a harmless ask
+    /// of a Gateway that keeps saying no; the fund's confirmer no longer
+    /// depends on it, but a healthy stream is still the fast path.
+    pub resubscribe_max: Duration,
+    /// How often to ask `/tickle` whether the Gateway session the socket
+    /// was opened under is still the current one.
+    pub session_check_every: Duration,
 }
 
 impl Default for ConnectorCfg {
@@ -71,6 +98,9 @@ impl Default for ConnectorCfg {
             event_log: None,
             retention: RetentionPolicy::default(),
             prune_every: Duration::from_secs(3_600),
+            resubscribe_min: Duration::from_secs(5),
+            resubscribe_max: Duration::from_secs(300),
+            session_check_every: Duration::from_secs(60),
         }
     }
 }
@@ -111,6 +141,9 @@ struct StatusState {
     reconnect_count: u64,
     reset_epoch: u64,
     topics_subscribed: BTreeSet<String>,
+    subscriptions: BTreeMap<String, SubscriptionState>,
+    subscribe_refusals: u64,
+    session_rollovers: u64,
 }
 
 impl EventsHandle {
@@ -142,6 +175,9 @@ impl EventsHandle {
             reset_epoch: s.reset_epoch,
             topics_subscribed: s.topics_subscribed.iter().cloned().collect(),
             buffer_sizes,
+            subscriptions: s.subscriptions.clone(),
+            subscribe_refusals: s.subscribe_refusals,
+            session_rollovers: s.session_rollovers,
         }
     }
 
@@ -301,6 +337,7 @@ pub fn spawn_connector(client: bezant::Client, cfg: ConnectorCfg) -> EventsHandl
         status: status.clone(),
         cmd_rx,
         active_marketdata_subs: BTreeSet::new(),
+        resubscribe: Resubscribe::default(),
     };
 
     tokio::spawn(actor.run());
@@ -321,6 +358,28 @@ struct ConnectorActor {
     status: Arc<RwLock<StatusState>>,
     cmd_rx: mpsc::Receiver<ConnectorCmd>,
     active_marketdata_subs: BTreeSet<i64>,
+    resubscribe: Resubscribe,
+}
+
+/// The standing subscriptions CPAPI has refused (or not yet honoured) on the
+/// current socket, and when to ask again. Reset on every connect.
+#[derive(Debug, Default)]
+struct Resubscribe {
+    /// Topics waiting on a subscribe that has not been honoured.
+    unconfirmed: BTreeSet<&'static str>,
+    /// When to send the next round, if any is due.
+    due: Option<TokioInstant>,
+    /// Delay to use for the NEXT round; doubles per round up to the ceiling.
+    backoff: Option<Duration>,
+}
+
+/// The wire command that establishes each standing subscription.
+const fn subscribe_command(topic: &str) -> Option<&'static str> {
+    match topic.as_bytes() {
+        b"orders" => Some("sor+{}"),
+        b"pnl" => Some("spl+{}"),
+        _ => None,
+    }
 }
 
 impl ConnectorActor {
@@ -372,6 +431,15 @@ impl ConnectorActor {
 
         ws.subscribe_orders().await?;
         ws.subscribe_pnl().await?;
+        // Neither is honoured until CPAPI says so with a real frame; a
+        // refusal or silence schedules a retry (see `handle_topic_frame`).
+        self.resubscribe = Resubscribe::default();
+        for topic in ["orders", "pnl"] {
+            self.resubscribe.unconfirmed.insert(topic);
+            self.set_subscription(topic, SubscriptionState::Pending)
+                .await;
+        }
+        self.schedule_resubscribe();
         // Re-establish any market data subs that were active before the
         // disconnect.
         for conid in self.active_marketdata_subs.clone() {
@@ -395,7 +463,18 @@ impl ConnectorActor {
     /// detect heartbeat timeout. Returns when the socket closes or any
     /// fatal error occurs.
     async fn dispatch_loop(&mut self, ws: &mut WsClient) -> Result<(), bezant::Error> {
+        let session = ws.session().to_owned();
+        let mut session_check = tokio::time::interval(self.cfg.session_check_every);
+        session_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        session_check.tick().await; // the first tick fires immediately; the socket was just opened on this session
         loop {
+            // A pending resubscribe is a timer; no pending resubscribe is a
+            // future that never resolves. `sleep_until` needs an instant
+            // either way, so park it a year out when there is nothing due.
+            let resub_at = self
+                .resubscribe
+                .due
+                .unwrap_or_else(|| TokioInstant::now() + Duration::from_secs(365 * 24 * 3_600));
             tokio::select! {
                 // Frame from the upstream WS — dispatch or detect close.
                 msg = timeout(self.cfg.heartbeat_timeout, ws.next_message()) => {
@@ -425,8 +504,132 @@ impl ConnectorActor {
                 Some(cmd) = self.cmd_rx.recv() => {
                     self.handle_command(ws, cmd).await;
                 }
+                // A standing subscription CPAPI refused (or never answered).
+                () = sleep_until(resub_at), if self.resubscribe.due.is_some() => {
+                    self.resubscribe(ws).await;
+                }
+                // Has the Gateway re-logged in underneath this socket?
+                _ = session_check.tick() => {
+                    if self.session_rolled_over(&session).await {
+                        self.status.write().await.session_rollovers += 1;
+                        warn!("events connector: gateway session changed under the socket (re-login); reconnecting so subscriptions bind to the live session");
+                        return Err(bezant::Error::WsProtocol("gateway session rolled over".into()));
+                    }
+                }
             }
         }
+    }
+
+    /// `/tickle` reports the Gateway's current session id. If it is not the
+    /// one this socket was opened under, the Gateway has re-authenticated
+    /// and everything subscribed on this socket is dead — however healthy
+    /// its heartbeats look. A tickle that fails proves nothing, so it does
+    /// not count.
+    async fn session_rolled_over(&self, socket_session: &str) -> bool {
+        match self.client.tickle().await {
+            Ok(t) => matches!(t.session.as_deref(), Some(live) if live != socket_session),
+            Err(e) => {
+                debug!(error = %e, "events connector: session check tickle failed; assuming unchanged");
+                false
+            }
+        }
+    }
+
+    /// Ask again for every standing subscription CPAPI has not honoured,
+    /// after priming the brokerage session with `/iserver/accounts`. CPAPI
+    /// documents that call as the precondition for order queries, and the
+    /// refusals cluster right after a (re-)login — before anything has made
+    /// it. Best-effort: a failed prime still sends the subscribe.
+    async fn resubscribe(&mut self, ws: &mut WsClient) {
+        self.resubscribe.due = None;
+        let topics: Vec<&'static str> = self.resubscribe.unconfirmed.iter().copied().collect();
+        if topics.is_empty() {
+            return;
+        }
+        if let Err(e) = self
+            .client
+            .api()
+            .get_brokerage_accounts(bezant::api::GetBrokerageAccountsRequest::default())
+            .await
+        {
+            debug!(error = %e, "events connector: /iserver/accounts prime failed before resubscribe");
+        }
+        for topic in topics {
+            let Some(cmd) = subscribe_command(topic) else {
+                continue;
+            };
+            match ws.send_text(cmd.to_owned()).await {
+                Ok(()) => info!(topic, "events connector: resubscribing"),
+                Err(e) => warn!(topic, error = %e, "events connector: resubscribe send failed"),
+            }
+            self.set_subscription(topic, SubscriptionState::Pending)
+                .await;
+        }
+        // Whatever CPAPI says next — a refusal, a snapshot, or nothing —
+        // the next round is already booked. Confirmation cancels it.
+        self.schedule_resubscribe();
+    }
+
+    /// Book the next resubscribe round, doubling the delay each time up to
+    /// the ceiling. Idempotent while a round is already booked.
+    fn schedule_resubscribe(&mut self) {
+        if self.resubscribe.unconfirmed.is_empty() || self.resubscribe.due.is_some() {
+            return;
+        }
+        let delay = self.resubscribe.backoff.unwrap_or(self.cfg.resubscribe_min);
+        self.resubscribe.due = Some(TokioInstant::now() + delay);
+        self.resubscribe.backoff = Some((delay * 2).min(self.cfg.resubscribe_max));
+    }
+
+    async fn set_subscription(&self, topic: &str, state: SubscriptionState) {
+        self.status
+            .write()
+            .await
+            .subscriptions
+            .insert(topic.to_owned(), state);
+    }
+
+    /// A frame on a standing topic is either CPAPI honouring the subscribe
+    /// (any real payload) or refusing it (`{"error": …}`). Only the former
+    /// is an event.
+    async fn handle_topic_frame(
+        &mut self,
+        topic: &'static str,
+        value: serde_json::Value,
+        now: String,
+    ) {
+        if let Some(err) = value.get("error") {
+            let code = value.get("code").and_then(serde_json::Value::as_i64);
+            warn!(
+                topic,
+                error = %err,
+                code,
+                "events connector: CPAPI refused the subscription; will retry with backoff"
+            );
+            {
+                let mut s = self.status.write().await;
+                s.subscribe_refusals += 1;
+                s.last_message_at = Some(now);
+            }
+            self.set_subscription(topic, SubscriptionState::Refused)
+                .await;
+            self.resubscribe.unconfirmed.insert(topic);
+            self.schedule_resubscribe();
+            return;
+        }
+        if self.resubscribe.unconfirmed.remove(topic) {
+            info!(
+                topic,
+                "events connector: subscription confirmed by first frame"
+            );
+            self.set_subscription(topic, SubscriptionState::Subscribed)
+                .await;
+            if self.resubscribe.unconfirmed.is_empty() {
+                self.resubscribe.due = None;
+                self.resubscribe.backoff = None;
+            }
+        }
+        self.push_to_topic(topic, value, now).await;
     }
 
     /// Decode + push a single WS frame into the appropriate ring.
@@ -455,10 +658,10 @@ impl ConnectorActor {
                 self.touch_last_message(now).await;
             }
             WsMessage::Order(value) => {
-                self.push_to_topic("orders", value, now).await;
+                self.handle_topic_frame("orders", value, now).await;
             }
             WsMessage::Pnl(value) => {
-                self.push_to_topic("pnl", value, now).await;
+                self.handle_topic_frame("pnl", value, now).await;
             }
             WsMessage::MarketData { conid, payload } => {
                 let topic = format!("marketdata:{conid}");
@@ -667,6 +870,7 @@ mod tests {
             status: Arc::new(RwLock::new(StatusState::default())),
             cmd_rx,
             active_marketdata_subs: BTreeSet::new(),
+            resubscribe: Resubscribe::default(),
         };
 
         actor
@@ -688,6 +892,142 @@ mod tests {
         assert_eq!(rings.get("marketdata:265598").unwrap().len(), 1);
     }
 
+    fn test_actor() -> ConnectorActor {
+        let (_tx, cmd_rx) = mpsc::channel(1);
+        std::mem::forget(_tx);
+        let client = bezant::Client::new("https://localhost:5000/v1/api").unwrap();
+        ConnectorActor {
+            client,
+            cfg: ConnectorCfg::default(),
+            rings: Arc::new(RwLock::new(HashMap::new())),
+            status: Arc::new(RwLock::new(StatusState::default())),
+            cmd_rx,
+            active_marketdata_subs: BTreeSet::new(),
+            resubscribe: Resubscribe::default(),
+        }
+    }
+
+    // The frame CPAPI actually sends — 17 of 20 subscribe attempts on one
+    // Gateway over Aug–Sep 2026 got this, and every one was filed as an
+    // order event while the subscribe was never retried.
+    fn refusal() -> serde_json::Value {
+        json!({"error": "unable to subscribe", "code": 500, "topic": "sor"})
+    }
+
+    #[tokio::test]
+    async fn a_subscribe_refusal_is_not_an_event() {
+        let mut actor = test_actor();
+        actor.resubscribe.unconfirmed.insert("orders");
+
+        actor.handle_frame(WsMessage::Order(refusal())).await;
+
+        let rings = actor.rings.read().await;
+        assert!(
+            rings.get("orders").is_none(),
+            "a refusal must not create or fill the orders ring — consumers would read it as an order frame"
+        );
+        let s = actor.status.read().await;
+        assert_eq!(
+            s.subscriptions.get("orders"),
+            Some(&SubscriptionState::Refused)
+        );
+        assert_eq!(s.subscribe_refusals, 1);
+        assert!(
+            s.last_message_at.is_some(),
+            "it is still a sign of life on the socket"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_books_a_retry_and_the_first_real_frame_cancels_it() {
+        let mut actor = test_actor();
+        actor.resubscribe.unconfirmed.insert("orders");
+
+        actor.handle_frame(WsMessage::Order(refusal())).await;
+        assert!(actor.resubscribe.due.is_some(), "a retry must be scheduled");
+        assert!(actor.resubscribe.unconfirmed.contains("orders"));
+
+        // CPAPI honouring the subscribe looks like a snapshot: {"topic":"sor","args":[…]}.
+        actor
+            .handle_frame(WsMessage::Order(json!({"topic": "sor", "args": []})))
+            .await;
+        assert!(
+            actor.resubscribe.due.is_none(),
+            "confirmed: nothing left to retry"
+        );
+        assert!(actor.resubscribe.unconfirmed.is_empty());
+        assert_eq!(
+            actor.status.read().await.subscriptions.get("orders"),
+            Some(&SubscriptionState::Subscribed)
+        );
+        assert_eq!(
+            actor.rings.read().await.get("orders").unwrap().len(),
+            1,
+            "the snapshot IS an event"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_delay_doubles_to_the_ceiling_and_resets_on_confirmation() {
+        let mut actor = test_actor();
+        actor.cfg.resubscribe_min = Duration::from_secs(5);
+        actor.cfg.resubscribe_max = Duration::from_secs(12);
+        actor.resubscribe.unconfirmed.insert("pnl");
+
+        actor.schedule_resubscribe();
+        assert_eq!(actor.resubscribe.backoff, Some(Duration::from_secs(10)));
+        actor.resubscribe.due = None; // as `resubscribe()` does when a round is sent
+        actor.schedule_resubscribe();
+        assert_eq!(
+            actor.resubscribe.backoff,
+            Some(Duration::from_secs(12)),
+            "capped"
+        );
+
+        actor
+            .handle_frame(WsMessage::Pnl(
+                json!({"topic": "spl", "args": {"upnl": 1.0}}),
+            ))
+            .await;
+        assert_eq!(
+            actor.resubscribe.backoff, None,
+            "the next socket starts from the minimum again"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_topic_confirming_does_not_cancel_the_other_topic_retry() {
+        let mut actor = test_actor();
+        actor.resubscribe.unconfirmed.insert("orders");
+        actor.resubscribe.unconfirmed.insert("pnl");
+        actor.schedule_resubscribe();
+
+        // pnl confirms (it nearly always does); orders is still refused.
+        actor
+            .handle_frame(WsMessage::Pnl(json!({"upnl": 1.0})))
+            .await;
+        assert!(
+            actor.resubscribe.due.is_some(),
+            "orders still needs its retry"
+        );
+        assert_eq!(
+            actor
+                .resubscribe
+                .unconfirmed
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec!["orders"]
+        );
+    }
+
+    #[test]
+    fn standing_topics_map_to_their_wire_commands() {
+        assert_eq!(subscribe_command("orders"), Some("sor+{}"));
+        assert_eq!(subscribe_command("pnl"), Some("spl+{}"));
+        assert_eq!(subscribe_command("marketdata:1"), None);
+    }
+
     #[tokio::test]
     async fn heartbeat_and_system_frames_dont_create_topics() {
         let (_tx, cmd_rx) = mpsc::channel(1);
@@ -699,6 +1039,7 @@ mod tests {
             status: Arc::new(RwLock::new(StatusState::default())),
             cmd_rx,
             active_marketdata_subs: BTreeSet::new(),
+            resubscribe: Resubscribe::default(),
         };
 
         actor.handle_frame(WsMessage::Heartbeat).await;
@@ -725,6 +1066,7 @@ mod tests {
             status: Arc::new(RwLock::new(StatusState::default())),
             cmd_rx,
             active_marketdata_subs: BTreeSet::new(),
+            resubscribe: Resubscribe::default(),
         };
 
         actor
@@ -749,6 +1091,7 @@ mod tests {
             status: Arc::new(RwLock::new(StatusState::default())),
             cmd_rx,
             active_marketdata_subs: BTreeSet::new(),
+            resubscribe: Resubscribe::default(),
         };
 
         // Seed an order event so the actor knows about the orders topic.
@@ -780,6 +1123,7 @@ mod tests {
             status: Arc::new(RwLock::new(StatusState::default())),
             cmd_rx,
             active_marketdata_subs: BTreeSet::new(),
+            resubscribe: Resubscribe::default(),
         };
 
         assert!(actor.active_marketdata_subs.insert(265_598));
