@@ -35,15 +35,18 @@ pub use ring::{ReadResult, TopicRing};
 /// One captured event. Wire-shape returned by `/events/{topic}` endpoints.
 #[derive(Clone, Debug, Serialize)]
 pub struct ObservedEvent {
-    /// Server-assigned monotonic cursor within `(topic, reset_epoch)`.
-    /// Use it as the `since=` parameter on the next poll.
+    /// Server-assigned cursor, strictly increasing per topic for the life
+    /// of the process and seeded from the boot time so a restart does not
+    /// rewind it. Always below 2^53. Use it as the `since=` parameter on the
+    /// next poll.
     pub cursor: u64,
     /// Topic name — `"orders"`, `"pnl"`, `"marketdata:265598"`, `"gap"`.
     pub topic: String,
     /// RFC 3339 timestamp at which the connector pushed this into the ring.
     pub received_at: String,
-    /// Increments every time the underlying WS reconnects or the server
-    /// restarts. Clients use it to detect "the cursor space reset under me".
+    /// The epoch this event was captured under. Seeded from the boot time
+    /// (Unix ms) and incremented on every reconnect, so it changes on both a
+    /// reconnect and a restart. Clients use it to detect a gap.
     pub reset_epoch: u64,
     /// The decoded JSON frame. Shape depends on the topic — see the
     /// generated `bezant-client` TS types for the typed views.

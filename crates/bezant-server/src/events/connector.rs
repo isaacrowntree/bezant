@@ -140,6 +140,8 @@ struct StatusState {
     last_message_at: Option<String>,
     reconnect_count: u64,
     reset_epoch: u64,
+    /// First cursor of every ring this process creates. See [`boot_seeds`].
+    cursor_base: u64,
     topics_subscribed: BTreeSet<String>,
     subscriptions: BTreeMap<String, SubscriptionState>,
     subscribe_refusals: u64,
@@ -154,6 +156,16 @@ impl EventsHandle {
     pub async fn read_topic(&self, topic: &str, since: u64, limit: usize) -> Option<ReadResult> {
         let rings = self.rings.read().await;
         rings.get(topic).map(|r| r.read_since(since, limit))
+    }
+
+    /// What a read of a topic that has no ring yet should answer: exactly
+    /// what an empty ring created right now would. The caller gets this
+    /// process's cursor space and live epoch instead of its own cursor
+    /// echoed back — an echo keeps a cursor from a previous process alive,
+    /// and the first real event then lands below it.
+    pub async fn read_empty_topic(&self, topic: &str, since: u64) -> ReadResult {
+        let s = self.status.read().await;
+        TopicRing::with_base(topic, 1, s.reset_epoch, s.cursor_base).read_since(since, 1)
     }
 
     /// Snapshot of status. `uptime_seconds` is computed at call time
@@ -214,10 +226,24 @@ impl EventsHandle {
     #[doc(hidden)]
     #[must_use]
     pub fn for_test_with_log(event_log: Option<Arc<EventLog>>) -> (Self, TestSink) {
+        Self::for_test_seeded(event_log, 1, 1)
+    }
+
+    /// Same as [`Self::for_test_with_log`], seeded the way a process boot
+    /// seeds a real connector — see [`boot_seeds`]. Two harnesses with
+    /// different seeds stand in for a process before and after a restart.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn for_test_seeded(
+        event_log: Option<Arc<EventLog>>,
+        reset_epoch: u64,
+        cursor_base: u64,
+    ) -> (Self, TestSink) {
         let rings: Arc<RwLock<HashMap<String, TopicRing>>> = Arc::new(RwLock::new(HashMap::new()));
         let status = Arc::new(RwLock::new(StatusState {
             connected: true,
-            reset_epoch: 1,
+            reset_epoch,
+            cursor_base,
             ..Default::default()
         }));
         let (cmd_tx, _cmd_rx) = mpsc::channel::<ConnectorCmd>(1);
@@ -263,12 +289,15 @@ impl TestSink {
             t if t.starts_with("marketdata:") => 2_000,
             _ => 256,
         };
-        let epoch = self.status.read().await.reset_epoch;
+        let (epoch, base) = {
+            let s = self.status.read().await;
+            (s.reset_epoch, s.cursor_base)
+        };
         let received_at = now_iso();
         let mut rings = self.rings.write().await;
         let ring = rings
             .entry(topic.to_string())
-            .or_insert_with(|| TopicRing::new(topic, cap, epoch));
+            .or_insert_with(|| TopicRing::with_base(topic, cap, epoch, base));
         let cursor = ring.push(payload.clone(), received_at.clone());
         drop(rings);
         if let Some(log) = &self.event_log {
@@ -288,9 +317,13 @@ impl TestSink {
         cursor
     }
 
-    /// Force a specific reset_epoch — used to test cursor-expired flows.
+    /// Force a specific reset_epoch, the way a reconnect moves it: every
+    /// existing ring follows.
     pub async fn set_reset_epoch(&self, epoch: u64) {
         self.status.write().await.reset_epoch = epoch;
+        for ring in self.rings.write().await.values_mut() {
+            ring.set_reset_epoch(epoch);
+        }
     }
 
     /// Force the `connected` flag — useful for `_status` shape testing.
@@ -307,7 +340,23 @@ impl TestSink {
 /// trims the sqlite store to retention policy every `cfg.prune_every`.
 pub fn spawn_connector(client: bezant::Client, cfg: ConnectorCfg) -> EventsHandle {
     let rings: Arc<RwLock<HashMap<String, TopicRing>>> = Arc::new(RwLock::new(HashMap::new()));
-    let status = Arc::new(RwLock::new(StatusState::default()));
+    let high_water = cfg.event_log.as_ref().and_then(|log| match log.high_water() {
+        Ok(hw) => hw,
+        Err(e) => {
+            warn!(error = %e, "events sqlite: could not read the previous run's cursors; seeding from the clock alone");
+            None
+        }
+    });
+    let (reset_epoch, cursor_base) = boot_seeds(unix_millis(), high_water);
+    info!(
+        reset_epoch,
+        cursor_base, "events connector: seeded epoch and cursors from boot time"
+    );
+    let status = Arc::new(RwLock::new(StatusState {
+        reset_epoch,
+        cursor_base,
+        ..StatusState::default()
+    }));
     let (cmd_tx, cmd_rx) = mpsc::channel::<ConnectorCmd>(64);
     let started_at = Instant::now();
     let event_log = cfg.event_log.clone();
@@ -349,6 +398,54 @@ pub fn spawn_connector(client: bezant::Client, cfg: ConnectorCfg) -> EventsHandl
         started_at,
         event_log,
     }
+}
+
+/// Largest integer a JavaScript `number` holds exactly. Cursors and epochs
+/// are read by a TypeScript client, so neither may pass it.
+const JS_MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+
+/// Cursor headroom kept below [`JS_MAX_SAFE_INTEGER`]: 2^52 events is more
+/// than any ring will see in one process lifetime.
+const CURSOR_BASE_CEILING: u64 = JS_MAX_SAFE_INTEGER - (1 << 52);
+
+/// How many cursors one millisecond of wall clock is worth. A restarted
+/// process starts its cursors above the previous one as long as that one
+/// averaged fewer than this many events per millisecond of uptime.
+const CURSORS_PER_MS: u64 = 1_000;
+
+/// The `reset_epoch` and first ring cursor for a process starting at
+/// `now_ms` (Unix milliseconds).
+///
+/// Both used to start at 1 on every boot, so a client holding cursor 500
+/// from the previous process was told "caught up" (204) until the new
+/// process had seen 500 events on that topic — for `orders`, days. Seeding
+/// from the clock puts the new process's cursors and epoch above the old
+/// one's. `high_water` is the largest `(cursor, reset_epoch)` in the
+/// persisted event log, if there is one, which covers a clock that came up
+/// behind the last run (a Pi has no RTC). Where neither holds, the ring
+/// answers a cursor it never issued with 412 instead (see [`TopicRing`]).
+///
+/// Epochs are milliseconds (~1.8e12) and cursors are milliseconds × 1000
+/// (~1.8e15); both stay below 2^53 for the next two centuries, and the
+/// cursor base is clamped to leave 2^52 of headroom regardless.
+#[doc(hidden)]
+#[must_use]
+pub fn boot_seeds(now_ms: u64, high_water: Option<(u64, u64)>) -> (u64, u64) {
+    let (hw_cursor, hw_epoch) = high_water.unwrap_or((0, 0));
+    let epoch = now_ms
+        .max(hw_epoch.saturating_add(1))
+        .clamp(1, JS_MAX_SAFE_INTEGER);
+    let base = now_ms
+        .saturating_mul(CURSORS_PER_MS)
+        .max(hw_cursor.saturating_add(1))
+        .clamp(1, CURSOR_BASE_CEILING);
+    (epoch, base)
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 struct ConnectorActor {
@@ -720,12 +817,15 @@ impl ConnectorActor {
             t if t.starts_with("marketdata:") => self.cfg.marketdata_capacity,
             _ => 1_000,
         };
-        let epoch = self.status.read().await.reset_epoch;
+        let (epoch, base) = {
+            let s = self.status.read().await;
+            (s.reset_epoch, s.cursor_base)
+        };
 
         let mut rings = self.rings.write().await;
         let ring = rings
             .entry(topic.to_string())
-            .or_insert_with(|| TopicRing::new(topic, cap, epoch));
+            .or_insert_with(|| TopicRing::with_base(topic, cap, epoch, base));
         let cursor = ring.push(payload.clone(), received_at.clone());
         drop(rings);
 
@@ -777,10 +877,18 @@ impl ConnectorActor {
     async fn bump_epoch_with_gap(&self, reason: GapReason) {
         let mut s = self.status.write().await;
         // First boot: no previous events, nothing to gap-mark.
-        let is_first_boot = s.reset_epoch == 0 && s.last_message_at.is_none();
+        let is_first_boot = s.last_message_at.is_none() && self.rings.read().await.is_empty();
         s.reset_epoch = s.reset_epoch.saturating_add(1);
         let new_epoch = s.reset_epoch;
+        let base = s.cursor_base;
         drop(s);
+
+        // Every ring moves to the live epoch, so a reader of `orders` or
+        // `pnl` sees the reset even though those rings were created epochs
+        // ago.
+        for ring in self.rings.write().await.values_mut() {
+            ring.set_reset_epoch(new_epoch);
+        }
 
         if is_first_boot {
             return;
@@ -800,10 +908,6 @@ impl ConnectorActor {
         let mut rings = self.rings.write().await;
         let topics: Vec<String> = rings.keys().cloned().collect();
         for topic in topics {
-            // Each ring keeps its own reset_epoch matching the time of
-            // its first push; we DON'T retro-bump that. The gap event's
-            // own `reset_epoch` reflects the new value via a fresh ring
-            // entry if needed.
             if let Some(r) = rings.get_mut(&topic) {
                 r.push(payload.clone(), now.clone());
             }
@@ -812,7 +916,7 @@ impl ConnectorActor {
         // poll any other topic still learn about resets.
         rings
             .entry("gap".to_string())
-            .or_insert_with(|| TopicRing::new("gap", 256, new_epoch))
+            .or_insert_with(|| TopicRing::with_base("gap", 256, new_epoch, base))
             .push(payload, now);
     }
 }
@@ -1107,6 +1211,35 @@ mod tests {
         assert_eq!(orders_ring.len(), 2);
         // 'gap' topic also got a marker.
         assert_eq!(rings.get("gap").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn boot_seeds_rise_with_the_clock_and_stay_js_safe() {
+        let now_ms = 1_790_000_000_000; // 2026
+        let (e1, b1) = boot_seeds(now_ms, None);
+        let (e2, b2) = boot_seeds(now_ms + 1, None);
+        assert!(e2 > e1 && b2 > b1);
+        // A process that ran a day and saw a million events per topic
+        // still hands out cursors below the next boot's base.
+        let (_, b_next) = boot_seeds(now_ms + 86_400_000, None);
+        assert!(b1 + 1_000_000 < b_next);
+        for v in [e1, b1] {
+            assert!(v <= JS_MAX_SAFE_INTEGER);
+        }
+        // Far future: clamped, never past 2^53.
+        let (e, b) = boot_seeds(u64::MAX / 2, None);
+        assert!(e <= JS_MAX_SAFE_INTEGER && b <= JS_MAX_SAFE_INTEGER);
+    }
+
+    #[test]
+    fn boot_seeds_stay_above_the_log_when_the_clock_is_behind() {
+        // The Pi booted before NTP synced: the clock reads an hour behind
+        // the last run, whose log holds these values.
+        let last_run = boot_seeds(1_790_000_000_000, None);
+        let hw = (last_run.1 + 42, last_run.0 + 3);
+        let (epoch, base) = boot_seeds(1_790_000_000_000 - 3_600_000, Some(hw));
+        assert!(epoch > hw.1);
+        assert!(base > hw.0);
     }
 
     #[tokio::test]

@@ -238,6 +238,25 @@ impl EventLog {
         Ok(total)
     }
 
+    /// The largest `(cursor, reset_epoch)` ever logged, or `None` for an
+    /// empty log. A restarting connector seeds above both so its cursors
+    /// and epoch never fall back below what a client may still hold, even
+    /// when the host clock came up behind the previous run.
+    pub fn high_water(&self) -> rusqlite::Result<Option<(u64, u64)>> {
+        let conn = self.conn.lock().unwrap();
+        let (cursor, epoch): (Option<i64>, Option<i64>) = conn.query_row(
+            "SELECT MAX(cursor), MAX(reset_epoch) FROM events",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok(match (cursor, epoch) {
+            (Some(c), Some(e)) => {
+                Some((u64::try_from(c).unwrap_or(0), u64::try_from(e).unwrap_or(0)))
+            }
+            _ => None,
+        })
+    }
+
     /// Total row count. Used by tests + diagnostics.
     pub fn count(&self) -> rusqlite::Result<usize> {
         let conn = self.conn.lock().unwrap();
@@ -339,6 +358,18 @@ mod tests {
         assert_eq!(dropped, 2);
 
         assert_eq!(log.count().unwrap(), 3);
+    }
+
+    #[test]
+    fn high_water_is_the_largest_cursor_and_epoch() {
+        let log = EventLog::open_in_memory().unwrap();
+        assert_eq!(log.high_water().unwrap(), None);
+        log.append(&evt(7, "orders", "2026-05-06T13:30:00Z"))
+            .unwrap();
+        let mut late = evt(3, "pnl", "2026-05-06T13:31:00Z");
+        late.reset_epoch = 9;
+        log.append(&late).unwrap();
+        assert_eq!(log.high_water().unwrap(), Some((7, 9)));
     }
 
     #[test]

@@ -1465,39 +1465,43 @@ async fn read_events_topic_resolved(
     since: u64,
     limit: usize,
 ) -> Response<Body> {
-    let Some(result) = handle.read_topic(topic, since, limit.max(1)).await else {
-        // Topic doesn't exist yet — no events have ever arrived for it.
-        // Return a 200 with empty array + the caller's cursor so polls
-        // remain idempotent until the first event lands.
-        let status = handle.status().await;
-        let body = serde_json::json!({
-            "events": [],
-            "next_cursor": since,
-            "reset_epoch": status.reset_epoch,
-        });
-        return (StatusCode::OK, Json(body)).into_response();
+    use crate::events::ReadResult;
+
+    let (result, ring_exists) = match handle.read_topic(topic, since, limit.max(1)).await {
+        Some(r) => (r, true),
+        // No event has arrived for this topic yet. Answer as an empty ring
+        // in this process's cursor space would — never by echoing the
+        // caller's cursor, which may belong to a previous process.
+        None => (handle.read_empty_topic(topic, since).await, false),
     };
 
-    use crate::events::ReadResult;
     match result {
         ReadResult::Ok {
             events,
             next_cursor,
+            reset_epoch,
         } => {
-            if events.is_empty() {
-                // No new events — 204 to make "nothing happened" cheap to
-                // detect on the client side without parsing a body.
+            // Caught up on a live ring — 204 to make "nothing happened"
+            // cheap to detect on the client side without parsing a body.
+            // The headers carry what a body would: the cursor to keep and
+            // the live epoch, so a client that reads them can see a reset
+            // without waiting for the next event.
+            if events.is_empty() && next_cursor == since && ring_exists {
                 let mut response = Response::builder()
                     .status(StatusCode::NO_CONTENT)
                     .body(Body::empty())
-                    .unwrap();
-                let cursor_str = next_cursor.to_string();
-                if let Ok(v) = HeaderValue::from_str(&cursor_str) {
-                    response.headers_mut().insert("x-bezant-cursor", v);
+                    .unwrap_or_default();
+                let headers = response.headers_mut();
+                if let Ok(v) = HeaderValue::from_str(&next_cursor.to_string()) {
+                    headers.insert("x-bezant-cursor", v);
+                }
+                if let Ok(v) = HeaderValue::from_str(&reset_epoch.to_string()) {
+                    headers.insert("x-bezant-reset-epoch", v);
                 }
                 return response;
             }
-            let reset_epoch = events.first().map(|e| e.reset_epoch).unwrap_or_else(|| 0);
+            // `reset_epoch` is the ring's live epoch, not the first event's:
+            // a batch that straddles a reconnect must report the new one.
             let body = serde_json::json!({
                 "events": events,
                 "next_cursor": next_cursor,
@@ -1513,8 +1517,9 @@ async fn read_events_topic_resolved(
                 code: "cursor_expired",
                 head_cursor,
                 reset_epoch,
-                message: "the requested cursor is older than the oldest buffered event; \
-                     reset to head_cursor and emit a synthetic gap on the consumer side",
+                message: "the requested cursor is not in this ring (older than the oldest \
+                     buffered event, or issued by a previous process); reset to \
+                     head_cursor - 1 and emit a synthetic gap on the consumer side",
             };
             (StatusCode::PRECONDITION_FAILED, Json(body)).into_response()
         }

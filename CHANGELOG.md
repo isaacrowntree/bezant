@@ -42,6 +42,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new session while the old socket keeps heartbeating; the connector now
   compares the socket's session id against `/tickle` every 60s and
   reconnects when it changes. `WsClient::session()` exposes the id.
+- **A restart no longer rewinds `/events` cursors below a client's.**
+  Cursors and `reset_epoch` both restarted at 1 in every process, so a
+  client holding cursor 500 from the previous run got 204 "caught up" —
+  and saw nothing — until the new process had pushed 500 events on that
+  topic. Both are now seeded from the boot time (epoch = Unix ms, first
+  cursor = Unix ms × 1000, both below 2^53) and from the sqlite log's high
+  water when persistence is on. A cursor a ring never issued is answered
+  with the existing 412 `cursor_expired` (`code`, `head_cursor`,
+  `reset_epoch` unchanged), and a cursor below the ring's first one reads
+  from the start. Every ring carries the live epoch (it used to be frozen
+  at the ring's creation, so `orders`/`pnl` never showed a reset); the 200
+  body's `reset_epoch` is that live epoch. A 204 now carries
+  `x-bezant-reset-epoch` next to `x-bezant-cursor`, and a topic with no
+  ring yet answers with this process's cursor instead of echoing the
+  caller's.
 
 - **`bezant-core::WsClient::connect` honours `accept_invalid_certs`.**
   Previously the WS handshake used tokio-tungstenite's default rustls
