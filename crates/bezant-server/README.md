@@ -52,10 +52,16 @@ REST reads:
 | POST   | `/events/_reconnect` (debug-token-gated)      | drop the WS and reconnect now, skipping backoff (202) |
 | GET    | `/events/{topic}/history?since_ts=…&limit=N`  | sqlite-backed history (when `BEZANT_EVENTS_DB_PATH` set) |
 
-Wire semantics: 200 with `{events, next_cursor, reset_epoch}` on hit, 204
-on caught-up, 412 with `{head_cursor, reset_epoch}` when the caller's
-cursor has fallen past the ring buffer's head (consumer should reset
-to head and emit a synthetic gap on its side).
+Wire semantics: 200 with `{events, next_cursor, reset_epoch}` on hit (and
+on a topic with no events yet, carrying this process's cursor), 204 on
+caught-up (headers `x-bezant-cursor`, `x-bezant-reset-epoch`), 412
+`cursor_expired` with `{head_cursor, reset_epoch}` when the caller's cursor
+is not in the ring — evicted, or issued by a previous process (consumer
+should reset to `head_cursor - 1` and emit a synthetic gap on its side).
+Cursors and `reset_epoch` are seeded from the boot time, so a restart
+never rewinds them below a client's; both stay below 2^53. The epoch
+moves once per reconnect, and the one gap event per outage goes to
+`/events/gap` only.
 
 When events capture is off, `/events/*` returns 503 `events_disabled`.
 

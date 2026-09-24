@@ -229,7 +229,7 @@ impl EventsHandle {
     ///
     /// # Errors
     /// The connector task is gone, or did not take the request within
-    /// [`RECONNECT_ACK_TIMEOUT`].
+    /// ten seconds.
     pub async fn request_reconnect(&self) -> Result<bool, String> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx

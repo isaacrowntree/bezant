@@ -43,17 +43,29 @@ listening.
 Wire semantics:
 
 - **200** — `{events, next_cursor, reset_epoch}`. Use `next_cursor` as
-  the next `since=`.
-- **204** — caller is caught up; cursor stays put.
+  the next `since=`. `reset_epoch` is the ring's live epoch. A topic with
+  no events yet answers 200 with no events and this process's cursor —
+  never the caller's echoed back.
+- **204** — caller is caught up; cursor stays put. Headers
+  `x-bezant-cursor` and `x-bezant-reset-epoch` carry the cursor and the
+  live epoch.
 - **412** — `{head_cursor, reset_epoch, code: "cursor_expired"}`. The
-  caller's cursor is older than the ring buffer's head; reset to
-  `head_cursor - 1` and emit a synthetic gap on the consumer side.
+  caller's cursor is not in the ring: older than its head (evicted), or
+  newer than anything it issued (a cursor from a previous process). Reset
+  to `head_cursor - 1` and emit a synthetic gap on the consumer side.
 - **503** — `{code: "events_disabled"}` when capture is off.
 
-`reset_epoch` bumps on every WS reconnect or process restart. Any change
-in epoch is the consumer's signal that "you missed something" — the
-connector also injects a synthetic event into every active topic ring
-so a polling consumer sees the gap on its next read.
+Cursors and `reset_epoch` are seeded from the boot time (epoch = Unix ms,
+first cursor = Unix ms × 1000, raised above the sqlite log's high water
+when persistence is on), so a restart never rewinds them below a client's;
+both stay below 2^53 for JavaScript clients. A cursor below the ring's
+first one reads from the start. The epoch then moves exactly once per
+reconnect — on the connect that ends an outage, never on a failed attempt
+— and every ring reports the new value. Any change in epoch is the
+consumer's signal that "you missed something". The outage itself is
+recorded as one event on `/events/gap` only (`reason`,
+`previous_reset_epoch`, `new_reset_epoch`, `disconnected_at`,
+`failed_attempts`).
 
 ## Error envelope
 
