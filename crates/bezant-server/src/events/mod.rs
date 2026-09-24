@@ -101,6 +101,12 @@ pub enum SubscriptionState {
     Subscribed,
     /// CPAPI answered the subscribe with an error; the connector is retrying.
     Refused,
+    /// Asked repeatedly (`BEZANT_EVENTS_QUIET_AFTER_ROUNDS`) with neither a
+    /// frame nor a refusal. CPAPI honours `sor+{}` in silence when there are
+    /// no live orders, so this is subscribed-as-far-as-anyone-can-tell: the
+    /// connector stops re-asking. A refusal puts it back to `refused`; the
+    /// first real frame makes it `subscribed`.
+    Quiet,
 }
 
 /// Reason a synthetic [`ObservedEvent`] of topic `"gap"` was injected.

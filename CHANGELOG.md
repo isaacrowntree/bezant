@@ -70,6 +70,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`ConnectorCfg::backoff_reset_after`), not only after a clean close, and
   a connect failure that repeats the last one's kind (still logged out)
   logs at DEBUG instead of a WARN a minute.
+- **A silent `orders` subscription goes `quiet` instead of `pending`
+  forever.** CPAPI honours `sor+{}` without any ack when there are no live
+  orders, so the connector re-asked every 5 minutes indefinitely. After
+  `BEZANT_EVENTS_QUIET_AFTER_ROUNDS` (default 3, `0` = old behaviour)
+  rounds with neither a frame nor a refusal, `/events/_status` reports the
+  topic `quiet` and re-asking stops. A refusal makes it `refused` again;
+  the first real frame makes it `subscribed`. `quiet` is a new value of
+  `subscriptions.*`.
 
 - **`bezant-core::WsClient::connect` honours `accept_invalid_certs`.**
   Previously the WS handshake used tokio-tungstenite's default rustls

@@ -89,6 +89,7 @@ Env-first, clap-exposed. See `bezant-server --help`.
 | `BEZANT_EVENTS_ORDERS_CAP`          | `1000`                               |
 | `BEZANT_EVENTS_PNL_CAP`             | `5000`                               |
 | `BEZANT_EVENTS_MARKETDATA_CAP`      | `2000` per conid                     |
+| `BEZANT_EVENTS_QUIET_AFTER_ROUNDS`  | `3` (`0` re-asks a silent subscription forever) |
 
 ## Deployment shape
 

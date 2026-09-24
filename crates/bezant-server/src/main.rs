@@ -114,6 +114,15 @@ struct Args {
     /// Without this, history is bounded by ring capacity only.
     #[arg(long, env = "BEZANT_EVENTS_DB_PATH")]
     events_db_path: Option<String>,
+
+    /// Resubscribe rounds a standing topic (`orders`, `pnl`) may go with
+    /// neither a frame nor a refusal before `/events/_status` reports it
+    /// `quiet` and the connector stops re-asking. CPAPI honours `sor+{}` in
+    /// silence when there are no live orders, so without this `orders`
+    /// stays `pending` and is re-asked every 5 minutes forever. `0` keeps
+    /// re-asking forever.
+    #[arg(long, env = "BEZANT_EVENTS_QUIET_AFTER_ROUNDS", default_value_t = 3)]
+    events_quiet_after_rounds: u32,
 }
 
 #[tokio::main]
@@ -177,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
             pnl_cap = args.events_pnl_cap,
             marketdata_cap = args.events_marketdata_cap,
             persistence = event_log.is_some(),
+            quiet_after_rounds = args.events_quiet_after_rounds,
             "events capture enabled (/events/* routes active)"
         );
         let cfg = ConnectorCfg {
@@ -184,6 +194,7 @@ async fn main() -> anyhow::Result<()> {
             pnl_capacity: args.events_pnl_cap,
             marketdata_capacity: args.events_marketdata_cap,
             event_log,
+            quiet_after_rounds: args.events_quiet_after_rounds,
             ..ConnectorCfg::default()
         };
         let handle = spawn_connector(client, cfg);

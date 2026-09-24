@@ -82,6 +82,7 @@ cargo run -p bezant-server -- \
 | `BEZANT_EVENTS_ORDERS_CAP`          | `1000`                               | orders ring capacity                         |
 | `BEZANT_EVENTS_PNL_CAP`             | `5000`                               | pnl ring capacity                            |
 | `BEZANT_EVENTS_MARKETDATA_CAP`      | `2000`                               | per-conid marketdata ring capacity           |
+| `BEZANT_EVENTS_QUIET_AFTER_ROUNDS`  | `3`                                  | silent resubscribes before a topic is `quiet` (`0` = re-ask forever) |
 
 ## License
 

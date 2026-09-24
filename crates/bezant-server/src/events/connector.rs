@@ -90,6 +90,10 @@ pub struct ConnectorCfg {
     /// backoff to `backoff_min`. Shorter-lived ones keep doubling it, so a
     /// socket that connects and dies at once cannot spin.
     pub backoff_reset_after: Duration,
+    /// Resubscribe rounds a standing topic may go unanswered — no frame, no
+    /// refusal — before it is reported `quiet` and no longer re-asked.
+    /// `0` re-asks forever (the behaviour before this knob existed).
+    pub quiet_after_rounds: u32,
 }
 
 impl Default for ConnectorCfg {
@@ -109,6 +113,7 @@ impl Default for ConnectorCfg {
             resubscribe_max: Duration::from_secs(300),
             session_check_every: Duration::from_secs(60),
             backoff_reset_after: Duration::from_secs(300),
+            quiet_after_rounds: 3,
         }
     }
 }
@@ -514,6 +519,62 @@ struct Resubscribe {
     due: Option<TokioInstant>,
     /// Delay to use for the NEXT round; doubles per round up to the ceiling.
     backoff: Option<Duration>,
+    /// Rounds sent per topic since its last refusal.
+    silent_rounds: BTreeMap<&'static str, u32>,
+    /// Topics given up on as quiet-but-alive (see [`SubscriptionState::Quiet`]).
+    quiet: BTreeSet<&'static str>,
+}
+
+impl Resubscribe {
+    /// A round is due: decide, per unconfirmed topic, whether to ask again
+    /// or to stop asking. Returns `(ask_again, gone_quiet)`.
+    ///
+    /// CPAPI refuses a subscribe it will not honour with an error frame, but
+    /// honours `sor+{}` in silence when there are no live orders to
+    /// snapshot — there is no ack. A topic that has been asked
+    /// `quiet_after` times with no refusal is therefore subscribed as far as
+    /// anyone can tell, and asking forever only keeps it `pending` in
+    /// `/events/_status`. `quiet_after == 0` keeps asking forever.
+    fn take_round(&mut self, quiet_after: u32) -> (Vec<&'static str>, Vec<&'static str>) {
+        self.due = None;
+        let mut ask = Vec::new();
+        let mut gone_quiet = Vec::new();
+        for topic in self.unconfirmed.clone() {
+            let rounds = self.silent_rounds.entry(topic).or_insert(0);
+            if quiet_after > 0 && *rounds >= quiet_after {
+                self.unconfirmed.remove(topic);
+                self.quiet.insert(topic);
+                gone_quiet.push(topic);
+            } else {
+                *rounds += 1;
+                ask.push(topic);
+            }
+        }
+        if self.unconfirmed.is_empty() {
+            self.backoff = None;
+        }
+        (ask, gone_quiet)
+    }
+
+    /// CPAPI said no: the topic is back on the retry list and its silence
+    /// count starts over.
+    fn refused(&mut self, topic: &'static str) {
+        self.unconfirmed.insert(topic);
+        self.quiet.remove(topic);
+        self.silent_rounds.insert(topic, 0);
+    }
+
+    /// A real frame arrived. Returns whether the topic was waiting on one
+    /// (unconfirmed or quiet), i.e. whether this frame is the confirmation.
+    fn confirmed(&mut self, topic: &'static str) -> bool {
+        self.silent_rounds.remove(topic);
+        let was_waiting = self.unconfirmed.remove(topic) | self.quiet.remove(topic);
+        if self.unconfirmed.is_empty() {
+            self.due = None;
+            self.backoff = None;
+        }
+        was_waiting
+    }
 }
 
 /// The wire command that establishes each standing subscription.
@@ -742,8 +803,15 @@ impl ConnectorActor {
     /// refusals cluster right after a (re-)login — before anything has made
     /// it. Best-effort: a failed prime still sends the subscribe.
     async fn resubscribe(&mut self, ws: &mut WsClient) {
-        self.resubscribe.due = None;
-        let topics: Vec<&'static str> = self.resubscribe.unconfirmed.iter().copied().collect();
+        let (topics, gone_quiet) = self.resubscribe.take_round(self.cfg.quiet_after_rounds);
+        for topic in gone_quiet {
+            info!(
+                topic,
+                rounds = self.cfg.quiet_after_rounds,
+                "events connector: no refusal after repeated subscribes; treating the topic as quiet but alive"
+            );
+            self.set_subscription(topic, SubscriptionState::Quiet).await;
+        }
         if topics.is_empty() {
             return;
         }
@@ -814,21 +882,17 @@ impl ConnectorActor {
             }
             self.set_subscription(topic, SubscriptionState::Refused)
                 .await;
-            self.resubscribe.unconfirmed.insert(topic);
+            self.resubscribe.refused(topic);
             self.schedule_resubscribe();
             return;
         }
-        if self.resubscribe.unconfirmed.remove(topic) {
+        if self.resubscribe.confirmed(topic) {
             info!(
                 topic,
                 "events connector: subscription confirmed by first frame"
             );
             self.set_subscription(topic, SubscriptionState::Subscribed)
                 .await;
-            if self.resubscribe.unconfirmed.is_empty() {
-                self.resubscribe.due = None;
-                self.resubscribe.backoff = None;
-            }
         }
         self.push_to_topic(topic, value, now).await;
     }
@@ -1224,6 +1288,64 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["orders"]
         );
+    }
+
+    /// `orders` with no live orders: CPAPI honours `sor+{}` in silence, so
+    /// the topic sat `pending` and was re-asked every 5 minutes forever.
+    #[tokio::test]
+    async fn orders_goes_quiet_after_n_silent_rounds() {
+        let mut r = Resubscribe::default();
+        r.unconfirmed.insert("orders");
+        for round in 1..=3 {
+            let (ask, quiet) = r.take_round(3);
+            assert_eq!(ask, vec!["orders"], "round {round} still asks");
+            assert!(quiet.is_empty());
+        }
+        let (ask, quiet) = r.take_round(3);
+        assert!(ask.is_empty(), "no fourth ask");
+        assert_eq!(quiet, vec!["orders"]);
+        assert!(r.unconfirmed.is_empty());
+        assert_eq!(r.backoff, None, "nothing left to schedule");
+
+        // The actor reports it, and a later order frame confirms it.
+        let mut actor = test_actor();
+        actor.resubscribe = r;
+        actor
+            .set_subscription("orders", SubscriptionState::Quiet)
+            .await;
+        actor
+            .handle_frame(WsMessage::Order(json!({"orderId": 1})))
+            .await;
+        assert_eq!(
+            actor.status.read().await.subscriptions.get("orders"),
+            Some(&SubscriptionState::Subscribed)
+        );
+    }
+
+    #[test]
+    fn a_refusal_restarts_the_silence_count_and_leaves_quiet() {
+        let mut r = Resubscribe::default();
+        r.unconfirmed.insert("orders");
+        r.take_round(2);
+        r.take_round(2);
+        r.refused("orders");
+        // Two more asks are owed after the refusal before it can go quiet.
+        assert_eq!(r.take_round(2).0, vec!["orders"]);
+        assert_eq!(r.take_round(2).0, vec!["orders"]);
+        assert_eq!(r.take_round(2).1, vec!["orders"]);
+        // And a refusal while quiet puts it back on the retry list.
+        r.refused("orders");
+        assert!(r.unconfirmed.contains("orders"));
+        assert!(!r.quiet.contains("orders"));
+    }
+
+    #[test]
+    fn zero_rounds_means_ask_forever() {
+        let mut r = Resubscribe::default();
+        r.unconfirmed.insert("orders");
+        for _ in 0..50 {
+            assert_eq!(r.take_round(0).0, vec!["orders"]);
+        }
     }
 
     #[test]
