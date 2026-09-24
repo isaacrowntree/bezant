@@ -35,15 +35,18 @@ pub use ring::{ReadResult, TopicRing};
 /// One captured event. Wire-shape returned by `/events/{topic}` endpoints.
 #[derive(Clone, Debug, Serialize)]
 pub struct ObservedEvent {
-    /// Server-assigned monotonic cursor within `(topic, reset_epoch)`.
-    /// Use it as the `since=` parameter on the next poll.
+    /// Server-assigned cursor, strictly increasing per topic for the life
+    /// of the process and seeded from the boot time so a restart does not
+    /// rewind it. Always below 2^53. Use it as the `since=` parameter on the
+    /// next poll.
     pub cursor: u64,
     /// Topic name — `"orders"`, `"pnl"`, `"marketdata:265598"`, `"gap"`.
     pub topic: String,
     /// RFC 3339 timestamp at which the connector pushed this into the ring.
     pub received_at: String,
-    /// Increments every time the underlying WS reconnects or the server
-    /// restarts. Clients use it to detect "the cursor space reset under me".
+    /// The epoch this event was captured under. Seeded from the boot time
+    /// (Unix ms) and incremented on every reconnect, so it changes on both a
+    /// reconnect and a restart. Clients use it to detect a gap.
     pub reset_epoch: u64,
     /// The decoded JSON frame. Shape depends on the topic — see the
     /// generated `bezant-client` TS types for the typed views.
@@ -62,7 +65,8 @@ pub struct EventsStatus {
     pub reconnect_count: u64,
     /// Wall-clock seconds since the connector task spawned.
     pub uptime_seconds: u64,
-    /// Current `reset_epoch` — bumps on each reconnect or process restart.
+    /// Current `reset_epoch`. Seeded from the boot time (Unix ms) and
+    /// bumped once per successful reconnect — never on a failed attempt.
     pub reset_epoch: u64,
     /// Topics currently subscribed at the upstream WS. Always includes
     /// `"orders"` and `"pnl"`; market data topics appear when a client
@@ -85,6 +89,11 @@ pub struct EventsStatus {
     /// How many times the connector tore its socket down because the
     /// Gateway's session id changed underneath it (a re-login).
     pub session_rollovers: u64,
+    /// How many times the connector task panicked and was restarted by its
+    /// supervisor since the process started.
+    pub connector_restarts: u64,
+    /// sqlite history appends that failed since the process started.
+    pub persist_failures: u64,
 }
 
 /// Where a standing subscription (`orders`, `pnl`) stands at the upstream WS.
@@ -97,6 +106,12 @@ pub enum SubscriptionState {
     Subscribed,
     /// CPAPI answered the subscribe with an error; the connector is retrying.
     Refused,
+    /// Asked repeatedly (`BEZANT_EVENTS_QUIET_AFTER_ROUNDS`) with neither a
+    /// frame nor a refusal. CPAPI honours `sor+{}` in silence when there are
+    /// no live orders, so this is subscribed-as-far-as-anyone-can-tell: the
+    /// connector stops re-asking. A refusal puts it back to `refused`; the
+    /// first real frame makes it `subscribed`.
+    Quiet,
 }
 
 /// Reason a synthetic [`ObservedEvent`] of topic `"gap"` was injected.

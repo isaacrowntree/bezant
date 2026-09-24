@@ -28,6 +28,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ref-counts upstream `smd+<conid>+{}` subscriptions on first poll;
   re-establishes them across WS reconnects.
 
+- **`POST /events/_reconnect`.** Drops the connector's socket and
+  reconnects immediately, skipping any backoff — the soft first step for
+  a watchdog that sees a silent stream, before `/iserver/reauthenticate`
+  and long before a container restart (which logs the Gateway out). Goes
+  through the connector's command channel and is gated by
+  `BEZANT_DEBUG_TOKEN` exactly like `/debug/*` (404 without a token
+  configured, 401 on a wrong one); answers 202
+  `{code: "reconnect_requested", was_connected}`. The connector now also
+  answers commands while backing off, so `/events/marketdata` no longer
+  hangs for the length of a backoff.
+
+- **`/health` tells "Gateway up, IBKR failing" apart from "Gateway down".**
+  A 5xx from the Gateway's `auth/status` means the Gateway took the
+  request and IBKR (`api.ibkr.com`) behind it did not answer; `/health`
+  now reports it as `code: "gateway_upstream_failing"` with
+  `gateway_reachable: true` and `upstream_status`. The HTTP status is the
+  Gateway's 5xx as before. `upstream_unreachable` keeps meaning the
+  Gateway itself refused the connection. A watchdog should not restart on
+  the new code: a restart cannot fix IBKR and logs the session out.
+
 ### Fixed
 
 - **The events connector now survives the two ways CPAPI kills a stream
@@ -42,6 +62,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new session while the old socket keeps heartbeating; the connector now
   compares the socket's session id against `/tickle` every 60s and
   reconnects when it changes. `WsClient::session()` exposes the id.
+- **A restart no longer rewinds `/events` cursors below a client's.**
+  Cursors and `reset_epoch` both restarted at 1 in every process, so a
+  client holding cursor 500 from the previous run got 204 "caught up" —
+  and saw nothing — until the new process had pushed 500 events on that
+  topic. Both are now seeded from the boot time (epoch = Unix ms, first
+  cursor = Unix ms × 1000, both below 2^53) and from the sqlite log's high
+  water when persistence is on. A cursor a ring never issued is answered
+  with the existing 412 `cursor_expired` (`code`, `head_cursor`,
+  `reset_epoch` unchanged), and a cursor below the ring's first one reads
+  from the start. Every ring carries the live epoch (it used to be frozen
+  at the ring's creation, so `orders`/`pnl` never showed a reset); the 200
+  body's `reset_epoch` is that live epoch. A 204 now carries
+  `x-bezant-reset-epoch` next to `x-bezant-cursor`, and a topic with no
+  ring yet answers with this process's cursor instead of echoing the
+  caller's.
+- **One outage, one epoch bump, one gap event — on the `gap` topic only.**
+  The epoch used to bump before every connect attempt, so a Gateway
+  logged out for an hour (an attempt a minute) moved it sixty times and
+  pushed sixty gap events into every ring, where `orders`/`pnl` readers
+  found frames that were neither. It now bumps once, on the connect that
+  ends the outage; the single gap event (now also persisted to sqlite)
+  carries `previous_reset_epoch`, `disconnected_at` and `failed_attempts`,
+  and goes only to `/events/gap`. The epoch change on every ring still
+  tells each topic's reader it had a gap.
+- **Reconnect backoff resets after a connection that lived 5 minutes**
+  (`ConnectorCfg::backoff_reset_after`), not only after a clean close, and
+  a connect failure that repeats the last one's kind (still logged out)
+  logs at DEBUG instead of a WARN a minute.
+- **A silent `orders` subscription goes `quiet` instead of `pending`
+  forever.** CPAPI honours `sor+{}` without any ack when there are no live
+  orders, so the connector re-asked every 5 minutes indefinitely. After
+  `BEZANT_EVENTS_QUIET_AFTER_ROUNDS` (default 3, `0` = old behaviour)
+  rounds with neither a frame nor a refusal, `/events/_status` reports the
+  topic `quiet` and re-asking stops. A refusal makes it `refused` again;
+  the first real frame makes it `subscribed`. `quiet` is a new value of
+  `subscriptions.*`.
+- **The connector task is supervised.** Nothing watched it: a panic
+  ended it and left `/events/_status` reporting `connected: true` over
+  frozen rings. A panic is now caught, the link marked down, counted in
+  the new `connector_restarts` status field, and the loop restarted with
+  its rings, epoch and command channel intact. The panic most likely to
+  happen is gone too: the debug-log `truncate()` sliced frames at a raw
+  byte offset and panicked on any multi-byte character at byte 200.
+- **Failed sqlite appends are counted and logged** (new
+  `persist_failures` status field; WARN on the 1st, 2nd, 4th… failure)
+  instead of being dropped with the `spawn_blocking` result, and the
+  event log's mutex recovers from poisoning instead of panicking every
+  later caller.
 
 - **`bezant-core::WsClient::connect` honours `accept_invalid_certs`.**
   Previously the WS handshake used tokio-tungstenite's default rustls

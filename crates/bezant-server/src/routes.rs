@@ -13,7 +13,7 @@ use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -48,6 +48,7 @@ pub fn router(state: AppState) -> Router {
         .route("/events/marketdata", get(events_marketdata))
         .route("/events/gap", get(events_gap))
         .route("/events/_status", get(events_status))
+        .route("/events/_reconnect", post(events_reconnect))
         .route("/events/{topic}/history", get(events_history))
         // Anything we haven't explicitly wrapped falls through to the
         // Gateway verbatim. The big reason this matters: the CPGateway's
@@ -806,9 +807,55 @@ async fn health_sso(State(state): State<AppState>) -> Json<SsoStatusBody> {
     ))
 }
 
+/// `/health` error code for "the Gateway is up, but IBKR behind it is not
+/// answering". The Client Portal Gateway is a proxy to `api.ibkr.com`: a
+/// 5xx from its `auth/status` means the Gateway process took our request
+/// and could not get an answer upstream (IBKR maintenance, Akamai, the
+/// host's route out). A restart cannot fix that and logs the session out,
+/// so it must not look like the Gateway itself being down —
+/// `upstream_unreachable` (connection refused) means exactly that.
+///
+/// The HTTP status is the Gateway's own 5xx, unchanged from before this
+/// code existed, so a client that only reads the status sees no change.
+pub(crate) const GATEWAY_UPSTREAM_FAILING: &str = "gateway_upstream_failing";
+
+/// `Some(response)` when `err` is the Gateway answering a 5xx — see
+/// [`GATEWAY_UPSTREAM_FAILING`].
+fn gateway_upstream_failing(err: &bezant::Error) -> Option<Response<Body>> {
+    let bezant::Error::UpstreamStatus { status, .. } = err else {
+        return None;
+    };
+    let code = StatusCode::from_u16(*status).ok()?;
+    if !code.is_server_error() {
+        return None;
+    }
+    tracing::warn!(
+        upstream_status = status,
+        "health: gateway is up but its upstream (api.ibkr.com) is failing"
+    );
+    Some(
+        (
+            code,
+            Json(serde_json::json!({
+                "code": GATEWAY_UPSTREAM_FAILING,
+                "message": format!(
+                    "the IBKR Gateway answered, but its auth/status failed upstream with HTTP {status}; \
+                     the Gateway process is up — restarting it will not help and logs the session out"
+                ),
+                "gateway_reachable": true,
+                "upstream_status": status,
+            })),
+        )
+            .into_response(),
+    )
+}
+
 #[tracing::instrument(skip_all)]
-async fn health(State(state): State<AppState>) -> Result<Json<HealthBody>, AppError> {
-    let status = state.client().auth_status().await?;
+async fn health(State(state): State<AppState>) -> Result<Response<Body>, AppError> {
+    let status = match state.client().auth_status().await {
+        Ok(s) => s,
+        Err(e) => return gateway_upstream_failing(&e).ok_or_else(|| e.into()),
+    };
     Ok(Json(HealthBody {
         authenticated: status.authenticated,
         connected: status.connected,
@@ -820,7 +867,8 @@ async fn health(State(state): State<AppState>) -> Result<Json<HealthBody>, AppEr
             consecutive_faults: b.consecutive_faults,
             wedged: b.consecutive_faults >= SSO_WEDGED_AFTER,
         }),
-    }))
+    })
+    .into_response())
 }
 
 #[tracing::instrument(skip_all)]
@@ -1383,6 +1431,52 @@ async fn events_status(State(state): State<AppState>) -> Response<Body> {
     Json(handle.status().await).into_response()
 }
 
+/// `POST /events/_reconnect` — drop the connector's socket and reconnect
+/// now, skipping any backoff. The soft first step when the stream has gone
+/// quiet: cheaper than `/iserver/reauthenticate` and far cheaper than a
+/// container restart, which logs the Gateway out.
+///
+/// Gated by the debug token like `/debug/*` (404 without one configured,
+/// 401 on a wrong one) rather than by source address: behind Docker's
+/// port mapping or a tunnel every caller looks local.
+///
+/// 202 `{code: "reconnect_requested", was_connected}` once the connector
+/// has taken the request; 503 `events_connector_unavailable` if it could
+/// not.
+async fn events_reconnect(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response<Body> {
+    if let Err(resp) = debug_auth(&state, &headers, &q) {
+        return resp;
+    }
+    let Some(handle) = state.events() else {
+        return events_disabled_response();
+    };
+    match handle.request_reconnect().await {
+        Ok(was_connected) => {
+            tracing::info!(was_connected, "events: reconnect requested over HTTP");
+            (
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({
+                    "code": "reconnect_requested",
+                    "was_connected": was_connected,
+                })),
+            )
+                .into_response()
+        }
+        Err(message) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "code": "events_connector_unavailable",
+                "message": message,
+            })),
+        )
+            .into_response(),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct HistoryQuery {
     /// RFC 3339 timestamp lower bound (exclusive). Required.
@@ -1465,39 +1559,43 @@ async fn read_events_topic_resolved(
     since: u64,
     limit: usize,
 ) -> Response<Body> {
-    let Some(result) = handle.read_topic(topic, since, limit.max(1)).await else {
-        // Topic doesn't exist yet — no events have ever arrived for it.
-        // Return a 200 with empty array + the caller's cursor so polls
-        // remain idempotent until the first event lands.
-        let status = handle.status().await;
-        let body = serde_json::json!({
-            "events": [],
-            "next_cursor": since,
-            "reset_epoch": status.reset_epoch,
-        });
-        return (StatusCode::OK, Json(body)).into_response();
+    use crate::events::ReadResult;
+
+    let (result, ring_exists) = match handle.read_topic(topic, since, limit.max(1)).await {
+        Some(r) => (r, true),
+        // No event has arrived for this topic yet. Answer as an empty ring
+        // in this process's cursor space would — never by echoing the
+        // caller's cursor, which may belong to a previous process.
+        None => (handle.read_empty_topic(topic, since).await, false),
     };
 
-    use crate::events::ReadResult;
     match result {
         ReadResult::Ok {
             events,
             next_cursor,
+            reset_epoch,
         } => {
-            if events.is_empty() {
-                // No new events — 204 to make "nothing happened" cheap to
-                // detect on the client side without parsing a body.
+            // Caught up on a live ring — 204 to make "nothing happened"
+            // cheap to detect on the client side without parsing a body.
+            // The headers carry what a body would: the cursor to keep and
+            // the live epoch, so a client that reads them can see a reset
+            // without waiting for the next event.
+            if events.is_empty() && next_cursor == since && ring_exists {
                 let mut response = Response::builder()
                     .status(StatusCode::NO_CONTENT)
                     .body(Body::empty())
-                    .unwrap();
-                let cursor_str = next_cursor.to_string();
-                if let Ok(v) = HeaderValue::from_str(&cursor_str) {
-                    response.headers_mut().insert("x-bezant-cursor", v);
+                    .unwrap_or_default();
+                let headers = response.headers_mut();
+                if let Ok(v) = HeaderValue::from_str(&next_cursor.to_string()) {
+                    headers.insert("x-bezant-cursor", v);
+                }
+                if let Ok(v) = HeaderValue::from_str(&reset_epoch.to_string()) {
+                    headers.insert("x-bezant-reset-epoch", v);
                 }
                 return response;
             }
-            let reset_epoch = events.first().map(|e| e.reset_epoch).unwrap_or_else(|| 0);
+            // `reset_epoch` is the ring's live epoch, not the first event's:
+            // a batch that straddles a reconnect must report the new one.
             let body = serde_json::json!({
                 "events": events,
                 "next_cursor": next_cursor,
@@ -1513,8 +1611,9 @@ async fn read_events_topic_resolved(
                 code: "cursor_expired",
                 head_cursor,
                 reset_epoch,
-                message: "the requested cursor is older than the oldest buffered event; \
-                     reset to head_cursor and emit a synthetic gap on the consumer side",
+                message: "the requested cursor is not in this ring (older than the oldest \
+                     buffered event, or issued by a previous process); reset to \
+                     head_cursor - 1 and emit a synthetic gap on the consumer side",
             };
             (StatusCode::PRECONDITION_FAILED, Json(body)).into_response()
         }

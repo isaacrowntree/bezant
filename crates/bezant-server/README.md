@@ -49,12 +49,19 @@ REST reads:
 | GET    | `/events/marketdata?conid=N&since=N&limit=N`  | L1 market data; lazily subscribes on first request |
 | GET    | `/events/gap?since=N&limit=N`                 | synthetic gap markers (reconnect / process restart) |
 | GET    | `/events/_status`                             | connector liveness + per-topic buffer sizes        |
+| POST   | `/events/_reconnect` (debug-token-gated)      | drop the WS and reconnect now, skipping backoff (202) |
 | GET    | `/events/{topic}/history?since_ts=…&limit=N`  | sqlite-backed history (when `BEZANT_EVENTS_DB_PATH` set) |
 
-Wire semantics: 200 with `{events, next_cursor, reset_epoch}` on hit, 204
-on caught-up, 412 with `{head_cursor, reset_epoch}` when the caller's
-cursor has fallen past the ring buffer's head (consumer should reset
-to head and emit a synthetic gap on its side).
+Wire semantics: 200 with `{events, next_cursor, reset_epoch}` on hit (and
+on a topic with no events yet, carrying this process's cursor), 204 on
+caught-up (headers `x-bezant-cursor`, `x-bezant-reset-epoch`), 412
+`cursor_expired` with `{head_cursor, reset_epoch}` when the caller's cursor
+is not in the ring — evicted, or issued by a previous process (consumer
+should reset to `head_cursor - 1` and emit a synthetic gap on its side).
+Cursors and `reset_epoch` are seeded from the boot time, so a restart
+never rewinds them below a client's; both stay below 2^53. The epoch
+moves once per reconnect, and the one gap event per outage goes to
+`/events/gap` only.
 
 When events capture is off, `/events/*` returns 503 `events_disabled`.
 
@@ -82,6 +89,7 @@ cargo run -p bezant-server -- \
 | `BEZANT_EVENTS_ORDERS_CAP`          | `1000`                               | orders ring capacity                         |
 | `BEZANT_EVENTS_PNL_CAP`             | `5000`                               | pnl ring capacity                            |
 | `BEZANT_EVENTS_MARKETDATA_CAP`      | `2000`                               | per-conid marketdata ring capacity           |
+| `BEZANT_EVENTS_QUIET_AFTER_ROUNDS`  | `3`                                  | silent resubscribes before a topic is `quiet` (`0` = re-ask forever) |
 
 ## License
 
