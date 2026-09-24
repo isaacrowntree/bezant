@@ -57,6 +57,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `x-bezant-reset-epoch` next to `x-bezant-cursor`, and a topic with no
   ring yet answers with this process's cursor instead of echoing the
   caller's.
+- **One outage, one epoch bump, one gap event — on the `gap` topic only.**
+  The epoch used to bump before every connect attempt, so a Gateway
+  logged out for an hour (an attempt a minute) moved it sixty times and
+  pushed sixty gap events into every ring, where `orders`/`pnl` readers
+  found frames that were neither. It now bumps once, on the connect that
+  ends the outage; the single gap event (now also persisted to sqlite)
+  carries `previous_reset_epoch`, `disconnected_at` and `failed_attempts`,
+  and goes only to `/events/gap`. The epoch change on every ring still
+  tells each topic's reader it had a gap.
+- **Reconnect backoff resets after a connection that lived 5 minutes**
+  (`ConnectorCfg::backoff_reset_after`), not only after a clean close, and
+  a connect failure that repeats the last one's kind (still logged out)
+  logs at DEBUG instead of a WARN a minute.
 
 - **`bezant-core::WsClient::connect` honours `accept_invalid_certs`.**
   Previously the WS handshake used tokio-tungstenite's default rustls

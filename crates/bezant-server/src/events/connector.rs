@@ -8,8 +8,11 @@
 //! 3. Loop: dispatch frames into per-topic rings, accept
 //!    subscribe/unsubscribe commands for market data, watch a heartbeat
 //!    timeout to detect a stalled socket.
-//! 4. On any disconnect: bump `reset_epoch`, push a synthetic `gap` event
-//!    into every active ring, sleep with backoff, GOTO 1.
+//! 4. On any disconnect: sleep with backoff, GOTO 1. The next SUCCESSFUL
+//!    connect bumps `reset_epoch` on every ring and records one synthetic
+//!    event on the `gap` topic for the whole outage — failed attempts in
+//!    between move nothing. A connection that lived 5 minutes resets the
+//!    backoff; a failure repeating the last one's kind logs at DEBUG.
 //!
 //! Two things CPAPI does that the loop above did not survive, and now does:
 //!
@@ -83,6 +86,10 @@ pub struct ConnectorCfg {
     /// How often to ask `/tickle` whether the Gateway session the socket
     /// was opened under is still the current one.
     pub session_check_every: Duration,
+    /// A connection that stayed up at least this long resets the reconnect
+    /// backoff to `backoff_min`. Shorter-lived ones keep doubling it, so a
+    /// socket that connects and dies at once cannot spin.
+    pub backoff_reset_after: Duration,
 }
 
 impl Default for ConnectorCfg {
@@ -101,6 +108,7 @@ impl Default for ConnectorCfg {
             resubscribe_min: Duration::from_secs(5),
             resubscribe_max: Duration::from_secs(300),
             session_check_every: Duration::from_secs(60),
+            backoff_reset_after: Duration::from_secs(300),
         }
     }
 }
@@ -379,15 +387,7 @@ pub fn spawn_connector(client: bezant::Client, cfg: ConnectorCfg) -> EventsHandl
         });
     }
 
-    let actor = ConnectorActor {
-        client,
-        cfg,
-        rings: rings.clone(),
-        status: status.clone(),
-        cmd_rx,
-        active_marketdata_subs: BTreeSet::new(),
-        resubscribe: Resubscribe::default(),
-    };
+    let actor = ConnectorActor::new(client, cfg, rings.clone(), status.clone(), cmd_rx);
 
     tokio::spawn(actor.run());
 
@@ -456,6 +456,52 @@ struct ConnectorActor {
     cmd_rx: mpsc::Receiver<ConnectorCmd>,
     active_marketdata_subs: BTreeSet<i64>,
     resubscribe: Resubscribe,
+    link: Link,
+}
+
+/// The connector's view of its own connection history — what decides when
+/// the epoch moves and what gets logged.
+#[derive(Debug, Default)]
+struct Link {
+    /// Whether any connect has ever succeeded in this process. The first
+    /// one is not a reconnect: the boot seed already gave it a fresh epoch.
+    ever_connected: bool,
+    /// When the current connection came up, while it is up.
+    connected_at: Option<Instant>,
+    /// The outage in progress, if the link is down after having been up.
+    outage: Option<Outage>,
+    /// The kind of the last failure logged at WARN. A repeat of the same
+    /// kind (the Gateway is still logged out, a minute later) goes to
+    /// DEBUG; a change is news.
+    last_failure: Option<String>,
+}
+
+/// One outage: from losing a connection to the next successful connect,
+/// however many attempts that takes. It ends in exactly one gap event.
+#[derive(Debug)]
+struct Outage {
+    /// RFC 3339 time the connection was lost.
+    since: String,
+    /// Connect attempts that failed during it.
+    failed_attempts: u64,
+}
+
+/// A coarse, stable name for a connect/stream failure, for deciding
+/// whether a failure is the same condition as the last one.
+fn failure_kind(e: &bezant::Error) -> String {
+    use bezant::Error as E;
+    match e {
+        E::NotAuthenticated => "not_authenticated".into(),
+        E::NoSession => "no_session".into(),
+        E::Http(h) if h.is_connect() => "gateway_unreachable".into(),
+        E::Http(h) if h.is_timeout() => "gateway_timeout".into(),
+        E::Http(_) => "http".into(),
+        E::UpstreamStatus { status, .. } => format!("upstream_status_{status}"),
+        E::WsHandshake { .. } => "ws_handshake".into(),
+        E::WsTransport { .. } => "ws_transport".into(),
+        E::WsProtocol(m) => format!("ws_protocol: {m}"),
+        other => format!("other: {other}"),
+    }
 }
 
 /// The standing subscriptions CPAPI has refused (or not yet honoured) on the
@@ -480,30 +526,87 @@ const fn subscribe_command(topic: &str) -> Option<&'static str> {
 }
 
 impl ConnectorActor {
+    fn new(
+        client: bezant::Client,
+        cfg: ConnectorCfg,
+        rings: Arc<RwLock<HashMap<String, TopicRing>>>,
+        status: Arc<RwLock<StatusState>>,
+        cmd_rx: mpsc::Receiver<ConnectorCmd>,
+    ) -> Self {
+        Self {
+            client,
+            cfg,
+            rings,
+            status,
+            cmd_rx,
+            active_marketdata_subs: BTreeSet::new(),
+            resubscribe: Resubscribe::default(),
+            link: Link::default(),
+        }
+    }
+
     async fn run(mut self) {
         info!("events connector starting");
         let mut backoff = self.cfg.backoff_min;
         loop {
-            // Bump epoch + emit gap markers BEFORE attempting connect, so
-            // any events arriving during this run are tagged with the
-            // correct epoch from the very first frame.
-            self.bump_epoch_with_gap(GapReason::ReconnectedAfterDisconnect)
-                .await;
+            let result = self.connect_and_run().await;
+            let lived = self.link.connected_at.take().map(|t| t.elapsed());
+            self.set_disconnected().await;
+            self.note_link_down(lived.is_some(), result.as_ref().err());
 
-            match self.connect_and_run().await {
-                Ok(()) => {
-                    info!("events connector: ws closed cleanly, reconnecting");
-                    backoff = self.cfg.backoff_min;
-                }
-                Err(e) => {
-                    warn!(error = %e, "events connector: ws failed, will retry");
-                    self.set_disconnected().await;
-                }
+            // A connection that held for a while was a healthy one; the
+            // next failure is a fresh incident, not the tail of a storm.
+            if lived.is_some_and(|d| d >= self.cfg.backoff_reset_after) {
+                backoff = self.cfg.backoff_min;
             }
-
             sleep(backoff).await;
             backoff = (backoff * 2).min(self.cfg.backoff_max);
         }
+    }
+
+    /// Book-keeping after a connect attempt or a connection ends. Opens an
+    /// outage when a live connection was lost, counts a failed attempt
+    /// otherwise, and logs a failure at WARN only when it is a different
+    /// condition from the last one logged.
+    fn note_link_down(&mut self, was_connected: bool, error: Option<&bezant::Error>) {
+        if was_connected {
+            self.link.outage = Some(Outage {
+                since: now_iso(),
+                failed_attempts: 0,
+            });
+        } else if let Some(outage) = self.link.outage.as_mut() {
+            outage.failed_attempts += 1;
+        }
+        let Some(e) = error else {
+            info!("events connector: ws closed cleanly, reconnecting");
+            return;
+        };
+        let kind = failure_kind(e);
+        if self.link.last_failure.as_deref() == Some(kind.as_str()) {
+            debug!(error = %e, kind, "events connector: still failing the same way, will retry");
+        } else {
+            warn!(error = %e, kind, "events connector: ws failed, will retry");
+            self.link.last_failure = Some(kind);
+        }
+    }
+
+    /// A connect just succeeded. The first in the process keeps the boot
+    /// epoch; every later one ends an outage, so the epoch moves exactly
+    /// once and exactly one gap event records it — however many attempts
+    /// failed in between (a logged-out Gateway fails one a minute for
+    /// hours).
+    async fn on_connected(&mut self) {
+        self.link.connected_at = Some(Instant::now());
+        if self.link.last_failure.take().is_some() {
+            info!("events connector: recovered");
+        }
+        if !self.link.ever_connected {
+            self.link.ever_connected = true;
+            return;
+        }
+        let outage = self.link.outage.take();
+        self.bump_epoch_with_gap(GapReason::ReconnectedAfterDisconnect, outage.as_ref())
+            .await;
     }
 
     /// One full connect cycle. Returns `Ok(())` on clean close, `Err`
@@ -548,6 +651,7 @@ impl ConnectorActor {
             }
         }
 
+        self.on_connected().await;
         self.set_connected().await;
         info!("events connector: connected, orders + pnl subscribed");
 
@@ -827,28 +931,32 @@ impl ConnectorActor {
             .entry(topic.to_string())
             .or_insert_with(|| TopicRing::with_base(topic, cap, epoch, base));
         let cursor = ring.push(payload.clone(), received_at.clone());
+        let epoch = ring.reset_epoch();
         drop(rings);
 
-        // Mirror to sqlite if configured. Best-effort — log on failure;
-        // the in-memory ring remains the canonical fast-path read.
-        if let Some(log) = &self.cfg.event_log {
-            let log = log.clone();
-            let evt = ObservedEvent {
-                cursor,
-                topic: topic.to_string(),
-                received_at: received_at.clone(),
-                reset_epoch: epoch,
-                payload,
-            };
-            // sqlite writes are blocking; offload to a worker so we
-            // don't block the connector loop on I/O.
-            tokio::task::spawn_blocking(move || log.append(&evt));
-        }
+        self.persist(ObservedEvent {
+            cursor,
+            topic: topic.to_string(),
+            received_at: received_at.clone(),
+            reset_epoch: epoch,
+            payload,
+        });
 
         // Update last_message_at + ensure topic shows in status.
         let mut s = self.status.write().await;
         s.last_message_at = Some(received_at);
         s.topics_subscribed.insert(topic.to_string());
+    }
+
+    /// Mirror an event to sqlite if configured. Best-effort — the in-memory
+    /// ring remains the canonical fast-path read.
+    fn persist(&self, evt: ObservedEvent) {
+        if let Some(log) = &self.cfg.event_log {
+            let log = log.clone();
+            // sqlite writes are blocking; offload to a worker so we
+            // don't block the connector loop on I/O.
+            tokio::task::spawn_blocking(move || log.append(&evt));
+        }
     }
 
     async fn touch_last_message(&self, now: String) {
@@ -871,53 +979,50 @@ impl ConnectorActor {
         self.status.write().await.connected = false;
     }
 
-    /// Increment `reset_epoch` and inject a synthetic gap event into
-    /// every existing ring + a new "gap" topic ring so consumers
-    /// polling any topic see the reset.
-    async fn bump_epoch_with_gap(&self, reason: GapReason) {
-        let mut s = self.status.write().await;
-        // First boot: no previous events, nothing to gap-mark.
-        let is_first_boot = s.last_message_at.is_none() && self.rings.read().await.is_empty();
-        s.reset_epoch = s.reset_epoch.saturating_add(1);
-        let new_epoch = s.reset_epoch;
-        let base = s.cursor_base;
-        drop(s);
+    /// Increment `reset_epoch`, move every ring to it, and record the reset
+    /// as one event on the `gap` topic.
+    ///
+    /// The gap goes ONLY to `gap`. It used to be pushed into every ring as
+    /// well, where an `orders` reader found a frame that was not an order
+    /// and a `pnl` reader one that was not P&L — while the epoch change on
+    /// every ring already tells each reader its topic had a gap.
+    async fn bump_epoch_with_gap(&self, reason: GapReason, outage: Option<&Outage>) {
+        let (new_epoch, base) = {
+            let mut s = self.status.write().await;
+            s.reset_epoch = s.reset_epoch.saturating_add(1);
+            (s.reset_epoch, s.cursor_base)
+        };
 
-        // Every ring moves to the live epoch, so a reader of `orders` or
-        // `pnl` sees the reset even though those rings were created epochs
-        // ago.
-        for ring in self.rings.write().await.values_mut() {
-            ring.set_reset_epoch(new_epoch);
-        }
-
-        if is_first_boot {
-            return;
-        }
-
-        // Inject a gap event into every active topic so cursor-advancing
-        // consumers see it on their next poll.
         let now = now_iso();
-        let payload = json!({
+        let mut payload = json!({
             "reason": match reason {
                 GapReason::ReconnectedAfterDisconnect => "reconnected_after_disconnect",
                 GapReason::ProcessRestart => "process_restart",
             },
+            "previous_reset_epoch": new_epoch - 1,
             "new_reset_epoch": new_epoch,
         });
+        if let Some(o) = outage {
+            payload["disconnected_at"] = json!(o.since);
+            payload["failed_attempts"] = json!(o.failed_attempts);
+        }
 
         let mut rings = self.rings.write().await;
-        let topics: Vec<String> = rings.keys().cloned().collect();
-        for topic in topics {
-            if let Some(r) = rings.get_mut(&topic) {
-                r.push(payload.clone(), now.clone());
-            }
+        for ring in rings.values_mut() {
+            ring.set_reset_epoch(new_epoch);
         }
-        // Always ensure a 'gap' topic exists so consumers that don't
-        // poll any other topic still learn about resets.
-        rings
+        let cursor = rings
             .entry("gap".to_string())
             .or_insert_with(|| TopicRing::with_base("gap", 256, new_epoch, base))
-            .push(payload, now);
+            .push(payload.clone(), now.clone());
+        drop(rings);
+        self.persist(ObservedEvent {
+            cursor,
+            topic: "gap".into(),
+            received_at: now,
+            reset_epoch: new_epoch,
+            payload,
+        });
     }
 }
 
@@ -967,15 +1072,13 @@ mod tests {
         // Build an actor with a closed cmd channel — we won't drive run().
         let (_tx, cmd_rx) = mpsc::channel(1);
         let client = bezant::Client::new("https://localhost:5000/v1/api").unwrap();
-        let mut actor = ConnectorActor {
+        let mut actor = ConnectorActor::new(
             client,
-            cfg: ConnectorCfg::default(),
-            rings: Arc::new(RwLock::new(HashMap::new())),
-            status: Arc::new(RwLock::new(StatusState::default())),
+            ConnectorCfg::default(),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(StatusState::default())),
             cmd_rx,
-            active_marketdata_subs: BTreeSet::new(),
-            resubscribe: Resubscribe::default(),
-        };
+        );
 
         actor
             .handle_frame(WsMessage::Order(json!({"orderId": 1})))
@@ -997,18 +1100,16 @@ mod tests {
     }
 
     fn test_actor() -> ConnectorActor {
-        let (_tx, cmd_rx) = mpsc::channel(1);
-        std::mem::forget(_tx);
+        let (tx, cmd_rx) = mpsc::channel(1);
+        std::mem::forget(tx);
         let client = bezant::Client::new("https://localhost:5000/v1/api").unwrap();
-        ConnectorActor {
+        ConnectorActor::new(
             client,
-            cfg: ConnectorCfg::default(),
-            rings: Arc::new(RwLock::new(HashMap::new())),
-            status: Arc::new(RwLock::new(StatusState::default())),
+            ConnectorCfg::default(),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(StatusState::default())),
             cmd_rx,
-            active_marketdata_subs: BTreeSet::new(),
-            resubscribe: Resubscribe::default(),
-        }
+        )
     }
 
     // The frame CPAPI actually sends — 17 of 20 subscribe attempts on one
@@ -1136,15 +1237,13 @@ mod tests {
     async fn heartbeat_and_system_frames_dont_create_topics() {
         let (_tx, cmd_rx) = mpsc::channel(1);
         let client = bezant::Client::new("https://localhost:5000/v1/api").unwrap();
-        let mut actor = ConnectorActor {
+        let mut actor = ConnectorActor::new(
             client,
-            cfg: ConnectorCfg::default(),
-            rings: Arc::new(RwLock::new(HashMap::new())),
-            status: Arc::new(RwLock::new(StatusState::default())),
+            ConnectorCfg::default(),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(StatusState::default())),
             cmd_rx,
-            active_marketdata_subs: BTreeSet::new(),
-            resubscribe: Resubscribe::default(),
-        };
+        );
 
         actor.handle_frame(WsMessage::Heartbeat).await;
         actor
@@ -1160,57 +1259,113 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bump_epoch_skips_gap_on_first_boot() {
-        let (_tx, cmd_rx) = mpsc::channel(1);
-        let client = bezant::Client::new("https://localhost:5000/v1/api").unwrap();
-        let actor = ConnectorActor {
-            client,
-            cfg: ConnectorCfg::default(),
-            rings: Arc::new(RwLock::new(HashMap::new())),
-            status: Arc::new(RwLock::new(StatusState::default())),
-            cmd_rx,
-            active_marketdata_subs: BTreeSet::new(),
-            resubscribe: Resubscribe::default(),
-        };
+    async fn the_first_connect_keeps_the_boot_epoch_and_leaves_no_gap() {
+        let mut actor = test_actor();
+        actor.status.write().await.reset_epoch = 42;
 
-        actor
-            .bump_epoch_with_gap(GapReason::ReconnectedAfterDisconnect)
-            .await;
+        actor.on_connected().await;
 
-        // No gap event injected on first boot.
+        assert!(actor.rings.read().await.is_empty(), "no gap on first boot");
+        assert_eq!(actor.status.read().await.reset_epoch, 42);
+    }
+
+    /// The epoch used to bump BEFORE every connect attempt, so a Gateway
+    /// that was logged out for an hour (one failed attempt a minute) moved
+    /// it sixty times and left sixty gap events.
+    #[tokio::test]
+    async fn failed_connects_do_not_move_the_epoch_and_one_outage_is_one_gap() {
+        let mut actor = test_actor();
+        actor.status.write().await.reset_epoch = 42;
+        actor.on_connected().await;
+
+        // The connection drops, then five attempts fail.
+        actor.note_link_down(true, Some(&bezant::Error::WsProtocol("closed".into())));
+        for _ in 0..5 {
+            actor.note_link_down(false, Some(&bezant::Error::NotAuthenticated));
+        }
+        assert_eq!(
+            actor.status.read().await.reset_epoch,
+            42,
+            "failed attempts leave the epoch alone"
+        );
+        assert!(actor.rings.read().await.get("gap").is_none());
+
+        actor.on_connected().await;
+
+        assert_eq!(actor.status.read().await.reset_epoch, 43);
         let rings = actor.rings.read().await;
-        assert!(rings.is_empty());
-        // But reset_epoch did bump.
-        assert_eq!(actor.status.read().await.reset_epoch, 1);
+        let gap = rings.get("gap").unwrap();
+        assert_eq!(gap.len(), 1, "one outage, one gap");
+        match gap.read_since(0, 10) {
+            ReadResult::Ok { events, .. } => {
+                assert_eq!(events[0].payload["failed_attempts"], json!(5));
+                assert_eq!(events[0].payload["previous_reset_epoch"], json!(42));
+                assert_eq!(events[0].payload["new_reset_epoch"], json!(43));
+                assert!(events[0].payload["disconnected_at"].is_string());
+            }
+            other => panic!("expected Ok, got {other:?}"),
+        }
     }
 
     #[tokio::test]
-    async fn bump_epoch_injects_gap_into_existing_topics() {
+    async fn the_run_loop_does_not_bump_the_epoch_on_failed_connects() {
+        // The real loop against a Gateway that refuses connections: the
+        // epoch must stay at its boot seed however many attempts fail.
         let (_tx, cmd_rx) = mpsc::channel(1);
-        let client = bezant::Client::new("https://localhost:5000/v1/api").unwrap();
-        let mut actor = ConnectorActor {
-            client,
-            cfg: ConnectorCfg::default(),
-            rings: Arc::new(RwLock::new(HashMap::new())),
-            status: Arc::new(RwLock::new(StatusState::default())),
-            cmd_rx,
-            active_marketdata_subs: BTreeSet::new(),
-            resubscribe: Resubscribe::default(),
+        let client = bezant::Client::new("https://127.0.0.1:1/v1/api").unwrap();
+        let cfg = ConnectorCfg {
+            backoff_min: Duration::from_millis(1),
+            backoff_max: Duration::from_millis(2),
+            ..ConnectorCfg::default()
         };
+        let status = Arc::new(RwLock::new(StatusState {
+            reset_epoch: 1_000,
+            ..StatusState::default()
+        }));
+        let rings = Arc::new(RwLock::new(HashMap::new()));
+        let actor = ConnectorActor::new(client, cfg, rings.clone(), status.clone(), cmd_rx);
+        let task = tokio::spawn(actor.run());
+        sleep(Duration::from_millis(200)).await;
+        task.abort();
 
-        // Seed an order event so the actor knows about the orders topic.
+        assert_eq!(status.read().await.reset_epoch, 1_000);
+        assert!(!status.read().await.connected);
+        assert!(rings.read().await.is_empty(), "no gap events either");
+    }
+
+    #[tokio::test]
+    async fn gap_events_land_only_in_the_gap_topic() {
+        let mut actor = test_actor();
+        actor.on_connected().await;
         actor.handle_frame(WsMessage::Order(json!({"id": 1}))).await;
-        // Now bump epoch as if we'd reconnected.
         actor
-            .bump_epoch_with_gap(GapReason::ReconnectedAfterDisconnect)
+            .handle_frame(WsMessage::Pnl(json!({"upnl": 1.0})))
             .await;
+        let before = actor.status.read().await.reset_epoch;
+
+        actor.note_link_down(true, None);
+        actor.on_connected().await;
 
         let rings = actor.rings.read().await;
-        let orders_ring = rings.get("orders").unwrap();
-        // Original event + gap marker = 2.
-        assert_eq!(orders_ring.len(), 2);
-        // 'gap' topic also got a marker.
+        assert_eq!(rings.get("orders").unwrap().len(), 1, "no gap in orders");
+        assert_eq!(rings.get("pnl").unwrap().len(), 1, "no gap in pnl");
         assert_eq!(rings.get("gap").unwrap().len(), 1);
+        // But every ring reports the new epoch, so its readers see the reset.
+        for topic in ["orders", "pnl", "gap"] {
+            assert_eq!(rings.get(topic).unwrap().reset_epoch(), before + 1);
+        }
+    }
+
+    #[test]
+    fn failure_kinds_group_repeats_of_the_same_condition() {
+        assert_eq!(
+            failure_kind(&bezant::Error::NotAuthenticated),
+            failure_kind(&bezant::Error::NotAuthenticated)
+        );
+        assert_ne!(
+            failure_kind(&bezant::Error::NotAuthenticated),
+            failure_kind(&bezant::Error::NoSession)
+        );
     }
 
     #[test]
@@ -1249,15 +1404,13 @@ mod tests {
         // hand-mutating the active_marketdata_subs set.
         let (_tx, cmd_rx) = mpsc::channel(1);
         let client = bezant::Client::new("https://localhost:5000/v1/api").unwrap();
-        let mut actor = ConnectorActor {
+        let mut actor = ConnectorActor::new(
             client,
-            cfg: ConnectorCfg::default(),
-            rings: Arc::new(RwLock::new(HashMap::new())),
-            status: Arc::new(RwLock::new(StatusState::default())),
+            ConnectorCfg::default(),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(StatusState::default())),
             cmd_rx,
-            active_marketdata_subs: BTreeSet::new(),
-            resubscribe: Resubscribe::default(),
-        };
+        );
 
         assert!(actor.active_marketdata_subs.insert(265_598));
         // Re-insert returns false (already present).

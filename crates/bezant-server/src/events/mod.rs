@@ -65,7 +65,8 @@ pub struct EventsStatus {
     pub reconnect_count: u64,
     /// Wall-clock seconds since the connector task spawned.
     pub uptime_seconds: u64,
-    /// Current `reset_epoch` — bumps on each reconnect or process restart.
+    /// Current `reset_epoch`. Seeded from the boot time (Unix ms) and
+    /// bumped once per successful reconnect — never on a failed attempt.
     pub reset_epoch: u64,
     /// Topics currently subscribed at the upstream WS. Always includes
     /// `"orders"` and `"pnl"`; market data topics appear when a client
