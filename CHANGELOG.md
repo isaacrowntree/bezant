@@ -28,6 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ref-counts upstream `smd+<conid>+{}` subscriptions on first poll;
   re-establishes them across WS reconnects.
 
+- **`POST /events/_reconnect`.** Drops the connector's socket and
+  reconnects immediately, skipping any backoff — the soft first step for
+  a watchdog that sees a silent stream, before `/iserver/reauthenticate`
+  and long before a container restart (which logs the Gateway out). Goes
+  through the connector's command channel and is gated by
+  `BEZANT_DEBUG_TOKEN` exactly like `/debug/*` (404 without a token
+  configured, 401 on a wrong one); answers 202
+  `{code: "reconnect_requested", was_connected}`. The connector now also
+  answers commands while backing off, so `/events/marketdata` no longer
+  hangs for the length of a backoff.
+
 ### Fixed
 
 - **The events connector now survives the two ways CPAPI kills a stream

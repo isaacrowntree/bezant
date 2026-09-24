@@ -49,6 +49,7 @@ REST reads:
 | GET    | `/events/marketdata?conid=N&since=N&limit=N`  | L1 market data; lazily subscribes on first request |
 | GET    | `/events/gap?since=N&limit=N`                 | synthetic gap markers (reconnect / process restart) |
 | GET    | `/events/_status`                             | connector liveness + per-topic buffer sizes        |
+| POST   | `/events/_reconnect` (debug-token-gated)      | drop the WS and reconnect now, skipping backoff (202) |
 | GET    | `/events/{topic}/history?since_ts=…&limit=N`  | sqlite-backed history (when `BEZANT_EVENTS_DB_PATH` set) |
 
 Wire semantics: 200 with `{events, next_cursor, reset_epoch}` on hit, 204

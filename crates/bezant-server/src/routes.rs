@@ -13,7 +13,7 @@ use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -48,6 +48,7 @@ pub fn router(state: AppState) -> Router {
         .route("/events/marketdata", get(events_marketdata))
         .route("/events/gap", get(events_gap))
         .route("/events/_status", get(events_status))
+        .route("/events/_reconnect", post(events_reconnect))
         .route("/events/{topic}/history", get(events_history))
         // Anything we haven't explicitly wrapped falls through to the
         // Gateway verbatim. The big reason this matters: the CPGateway's
@@ -1381,6 +1382,52 @@ async fn events_status(State(state): State<AppState>) -> Response<Body> {
         return events_disabled_response();
     };
     Json(handle.status().await).into_response()
+}
+
+/// `POST /events/_reconnect` — drop the connector's socket and reconnect
+/// now, skipping any backoff. The soft first step when the stream has gone
+/// quiet: cheaper than `/iserver/reauthenticate` and far cheaper than a
+/// container restart, which logs the Gateway out.
+///
+/// Gated by the debug token like `/debug/*` (404 without one configured,
+/// 401 on a wrong one) rather than by source address: behind Docker's
+/// port mapping or a tunnel every caller looks local.
+///
+/// 202 `{code: "reconnect_requested", was_connected}` once the connector
+/// has taken the request; 503 `events_connector_unavailable` if it could
+/// not.
+async fn events_reconnect(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response<Body> {
+    if let Err(resp) = debug_auth(&state, &headers, &q) {
+        return resp;
+    }
+    let Some(handle) = state.events() else {
+        return events_disabled_response();
+    };
+    match handle.request_reconnect().await {
+        Ok(was_connected) => {
+            tracing::info!(was_connected, "events: reconnect requested over HTTP");
+            (
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({
+                    "code": "reconnect_requested",
+                    "was_connected": was_connected,
+                })),
+            )
+                .into_response()
+        }
+        Err(message) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "code": "events_connector_unavailable",
+                "message": message,
+            })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]

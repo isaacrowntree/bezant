@@ -496,3 +496,63 @@ async fn a_batch_straddling_a_reconnect_reports_the_new_epoch() {
     assert_eq!(body["reset_epoch"], json!(2));
     assert_eq!(body["events"][0]["reset_epoch"], json!(1));
 }
+
+async fn app_with_token(handle: EventsHandle, token: &str) -> axum::Router {
+    let gateway = MockServer::start().await;
+    let client = bezant::Client::builder(format!("{}/v1/api", gateway.uri()))
+        .accept_invalid_certs(true)
+        .build()
+        .expect("client");
+    Box::leak(Box::new(gateway));
+    router(AppState::with_debug_token(client, token).with_events(handle))
+}
+
+async fn post(app: &axum::Router, uri: &str, token: Option<&str>) -> axum::http::Response<Body> {
+    let mut req = Request::builder().method("POST").uri(uri);
+    if let Some(t) = token {
+        req = req.header("x-bezant-debug-token", t);
+    }
+    app.clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn reconnect_goes_through_the_connector_command_channel() {
+    let (handle, sink) = EventsHandle::for_test();
+    sink.serve_commands();
+    let app = app_with_token(handle, "s3cret").await;
+
+    let (status, body) =
+        response_body(post(&app, "/events/_reconnect", Some("s3cret")).await).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(body["code"], json!("reconnect_requested"));
+    assert_eq!(body["was_connected"], json!(true));
+    assert_eq!(sink.reconnect_requests(), 1);
+}
+
+#[tokio::test]
+async fn reconnect_is_gated_by_the_debug_token() {
+    let (handle, sink) = EventsHandle::for_test();
+    sink.serve_commands();
+    let app = app_with_token(handle, "s3cret").await;
+
+    let resp = post(&app, "/events/_reconnect", Some("wrong")).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let resp = post(&app, "/events/_reconnect", None).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        sink.reconnect_requests(),
+        0,
+        "nothing reached the connector"
+    );
+
+    // No token configured: the endpoint does not exist.
+    let (handle, sink) = EventsHandle::for_test();
+    sink.serve_commands();
+    let app = app_on(handle).await;
+    let resp = post(&app, "/events/_reconnect", Some("s3cret")).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(sink.reconnect_requests(), 0);
+}

@@ -129,7 +129,15 @@ enum ConnectorCmd {
         conid: i64,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Drop the socket (if any) and connect again now, skipping any backoff.
+    /// Replies with whether a socket was up when the request arrived.
+    Reconnect { reply: oneshot::Sender<bool> },
 }
+
+/// How long `POST /events/_reconnect` waits for the connector to take the
+/// request. The connector reads commands between frames and while backing
+/// off, so this only runs out if it is stuck mid-connect.
+const RECONNECT_ACK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Cloneable handle the axum handlers use. Reads come straight off the
 /// shared ring map; writes go through the command channel.
@@ -214,6 +222,27 @@ impl EventsHandle {
         }
     }
 
+    /// Ask the connector to drop its socket and reconnect now, bypassing
+    /// the backoff — the soft alternative to restarting the container when
+    /// the stream has gone quiet. Returns whether a socket was up when the
+    /// request was taken.
+    ///
+    /// # Errors
+    /// The connector task is gone, or did not take the request within
+    /// [`RECONNECT_ACK_TIMEOUT`].
+    pub async fn request_reconnect(&self) -> Result<bool, String> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(ConnectorCmd::Reconnect { reply: tx })
+            .await
+            .map_err(|_| "connector task is not running".to_string())?;
+        match timeout(RECONNECT_ACK_TIMEOUT, rx).await {
+            Ok(Ok(was_connected)) => Ok(was_connected),
+            Ok(Err(_)) => Err("connector task dropped reply channel".to_string()),
+            Err(_) => Err("connector did not take the request in time".to_string()),
+        }
+    }
+
     /// Ensure the upstream WS is subscribed to market data for `conid`.
     /// Idempotent; multiple callers can request the same conid and only
     /// one upstream subscribe is sent. Returns `Err` if the connector
@@ -267,7 +296,7 @@ impl EventsHandle {
             cursor_base,
             ..Default::default()
         }));
-        let (cmd_tx, _cmd_rx) = mpsc::channel::<ConnectorCmd>(1);
+        let (cmd_tx, cmd_rx) = mpsc::channel::<ConnectorCmd>(8);
         let started_at = Instant::now();
         let handle = Self {
             rings: rings.clone(),
@@ -281,6 +310,8 @@ impl EventsHandle {
             rings,
             status,
             event_log,
+            cmd_rx: Arc::new(std::sync::Mutex::new(Some(cmd_rx))),
+            reconnects: Arc::default(),
         };
         (handle, sink)
     }
@@ -297,6 +328,9 @@ pub struct TestSink {
     rings: Arc<RwLock<HashMap<String, TopicRing>>>,
     status: Arc<RwLock<StatusState>>,
     event_log: Option<Arc<EventLog>>,
+    /// The command channel's far end, until [`Self::serve_commands`] takes it.
+    cmd_rx: Arc<std::sync::Mutex<Option<mpsc::Receiver<ConnectorCmd>>>>,
+    reconnects: Arc<AtomicU64>,
 }
 
 #[doc(hidden)]
@@ -351,6 +385,39 @@ impl TestSink {
     /// Force the `connected` flag — useful for `_status` shape testing.
     pub async fn set_connected(&self, connected: bool) {
         self.status.write().await.connected = connected;
+    }
+
+    /// Stand in for the connector's command loop: answer every command the
+    /// handle sends, as a connected connector would, counting reconnect
+    /// requests. Without this, commands queue and are never answered.
+    pub fn serve_commands(&self) {
+        let rx = self
+            .cmd_rx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let Some(mut rx) = rx else { return };
+        let status = self.status.clone();
+        let reconnects = self.reconnects.clone();
+        tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    ConnectorCmd::EnsureMarketData { reply, .. } => {
+                        let _ = reply.send(Ok(()));
+                    }
+                    ConnectorCmd::Reconnect { reply } => {
+                        reconnects.fetch_add(1, Ordering::SeqCst);
+                        let _ = reply.send(status.read().await.connected);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Reconnect requests the connector has taken (see [`Self::serve_commands`]).
+    #[must_use]
+    pub fn reconnect_requests(&self) -> u64 {
+        self.reconnects.load(Ordering::SeqCst)
     }
 }
 
@@ -475,6 +542,9 @@ struct ConnectorActor {
     link: Link,
     /// sqlite appends that failed since boot (see [`Self::persist`]).
     persist_failures: Arc<AtomicU64>,
+    /// Set when the socket was dropped on request: reconnect without
+    /// waiting out the backoff.
+    reconnect_now: bool,
 }
 
 /// The connector's view of its own connection history — what decides when
@@ -617,6 +687,7 @@ impl ConnectorActor {
             resubscribe: Resubscribe::default(),
             link: Link::default(),
             persist_failures: Arc::default(),
+            reconnect_now: false,
         }
     }
 
@@ -675,8 +746,39 @@ impl ConnectorActor {
             if lived.is_some_and(|d| d >= self.cfg.backoff_reset_after) {
                 backoff = self.cfg.backoff_min;
             }
-            sleep(backoff).await;
+            if std::mem::take(&mut self.reconnect_now) || self.idle(backoff).await {
+                // Asked to reconnect: go now, and start the backoff over.
+                backoff = self.cfg.backoff_min;
+                continue;
+            }
             backoff = (backoff * 2).min(self.cfg.backoff_max);
+        }
+    }
+
+    /// Sleep out a backoff while still answering commands — they used to
+    /// queue unanswered until the next connect, so `/events/marketdata`
+    /// hung for the whole backoff. Market-data requests are booked for the
+    /// next connect. Returns `true` if a reconnect was requested, cutting
+    /// the sleep short.
+    async fn idle(&mut self, backoff: Duration) -> bool {
+        let wake = sleep(backoff);
+        tokio::pin!(wake);
+        loop {
+            tokio::select! {
+                () = &mut wake => return false,
+                Some(cmd) = self.cmd_rx.recv() => match cmd {
+                    ConnectorCmd::Reconnect { reply } => {
+                        info!("events connector: reconnect requested while down; connecting now");
+                        let _ = reply.send(false);
+                        return true;
+                    }
+                    ConnectorCmd::EnsureMarketData { conid, reply } => {
+                        self.active_marketdata_subs.insert(conid);
+                        self.add_topic_to_status(format!("marketdata:{conid}")).await;
+                        let _ = reply.send(Ok(()));
+                    }
+                },
+            }
         }
     }
 
@@ -694,7 +796,9 @@ impl ConnectorActor {
             outage.failed_attempts += 1;
         }
         let Some(e) = error else {
-            info!("events connector: ws closed cleanly, reconnecting");
+            if !self.reconnect_now {
+                info!("events connector: ws closed cleanly, reconnecting");
+            }
             return;
         };
         let kind = failure_kind(e);
@@ -819,7 +923,11 @@ impl ConnectorActor {
                 }
                 // Command from the REST side (lazy market data subs).
                 Some(cmd) = self.cmd_rx.recv() => {
-                    self.handle_command(ws, cmd).await;
+                    if self.handle_command(ws, cmd).await {
+                        info!("events connector: reconnect requested; dropping the socket");
+                        self.reconnect_now = true;
+                        return Ok(());
+                    }
                 }
                 // A standing subscription CPAPI refused (or never answered).
                 () = sleep_until(resub_at), if self.resubscribe.due.is_some() => {
@@ -1004,8 +1112,13 @@ impl ConnectorActor {
         }
     }
 
-    async fn handle_command(&mut self, ws: &mut WsClient, cmd: ConnectorCmd) {
+    /// Returns `true` when the command asks for the socket to be dropped.
+    async fn handle_command(&mut self, ws: &mut WsClient, cmd: ConnectorCmd) -> bool {
         match cmd {
+            ConnectorCmd::Reconnect { reply } => {
+                let _ = reply.send(true);
+                return true;
+            }
             ConnectorCmd::EnsureMarketData { conid, reply } => {
                 if self.active_marketdata_subs.insert(conid) {
                     debug!(conid, "events connector: subscribing market data");
@@ -1031,6 +1144,7 @@ impl ConnectorActor {
                 }
             }
         }
+        false
     }
 
     async fn push_to_topic(&self, topic: &str, payload: serde_json::Value, received_at: String) {
@@ -1472,6 +1586,48 @@ mod tests {
         assert!(caught.is_err());
         actor.on_crash("inside the loop").await;
         assert_eq!(actor.status.read().await.connector_restarts, 1);
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_request_cuts_the_backoff_short() {
+        let (tx, cmd_rx) = mpsc::channel(4);
+        let client = bezant::Client::new("https://localhost:5000/v1/api").unwrap();
+        let mut actor = ConnectorActor::new(
+            client,
+            ConnectorCfg::default(),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(StatusState::default())),
+            cmd_rx,
+        );
+        let (reply, ack) = oneshot::channel();
+        tx.send(ConnectorCmd::Reconnect { reply }).await.unwrap();
+        let started = Instant::now();
+        assert!(actor.idle(Duration::from_secs(60)).await);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!ack.await.unwrap(), "no socket was up");
+    }
+
+    #[tokio::test]
+    async fn market_data_requested_while_down_is_booked_not_hung() {
+        let (tx, cmd_rx) = mpsc::channel(4);
+        let client = bezant::Client::new("https://localhost:5000/v1/api").unwrap();
+        let mut actor = ConnectorActor::new(
+            client,
+            ConnectorCfg::default(),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(StatusState::default())),
+            cmd_rx,
+        );
+        let (reply, ack) = oneshot::channel();
+        tx.send(ConnectorCmd::EnsureMarketData {
+            conid: 265_598,
+            reply,
+        })
+        .await
+        .unwrap();
+        assert!(!actor.idle(Duration::from_millis(50)).await);
+        assert_eq!(ack.await.unwrap(), Ok(()));
+        assert!(actor.active_marketdata_subs.contains(&265_598));
     }
 
     #[test]
