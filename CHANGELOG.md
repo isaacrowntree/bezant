@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answers commands while backing off, so `/events/marketdata` no longer
   hangs for the length of a backoff.
 
+- **`/health` tells "Gateway up, IBKR failing" apart from "Gateway down".**
+  A 5xx from the Gateway's `auth/status` means the Gateway took the
+  request and IBKR (`api.ibkr.com`) behind it did not answer; `/health`
+  now reports it as `code: "gateway_upstream_failing"` with
+  `gateway_reachable: true` and `upstream_status`. The HTTP status is the
+  Gateway's 5xx as before. `upstream_unreachable` keeps meaning the
+  Gateway itself refused the connection. A watchdog should not restart on
+  the new code: a restart cannot fix IBKR and logs the session out.
+
 ### Fixed
 
 - **The events connector now survives the two ways CPAPI kills a stream

@@ -374,6 +374,86 @@ async fn health_maps_disconnected_session_to_503() {
     assert_eq!(body["authenticated"], json!(true));
 }
 
+/// The Gateway process is up and answering, but IBKR behind it is not:
+/// its `auth/status` comes back 5xx. That must be told apart from the
+/// Gateway being down (`upstream_unreachable`) — a restart fixes the
+/// latter and only costs a login in the former.
+#[tokio::test]
+async fn health_reports_gateway_up_but_upstream_failing() {
+    for upstream in [500u16, 502, 503, 504] {
+        let gateway = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/api/iserver/auth/status"))
+            .respond_with(ResponseTemplate::new(upstream))
+            .mount(&gateway)
+            .await;
+        let app = make_app(&gateway).await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (status, body) = response_body(resp).await;
+        assert_eq!(
+            status.as_u16(),
+            upstream,
+            "status is the Gateway's own, as before"
+        );
+        assert_eq!(body["code"], json!("gateway_upstream_failing"));
+        assert_eq!(body["gateway_reachable"], json!(true));
+        assert_eq!(body["upstream_status"], json!(upstream));
+    }
+}
+
+#[tokio::test]
+async fn health_still_reports_a_down_gateway_as_unreachable() {
+    // Nothing listens on port 1.
+    let client = bezant::Client::builder("https://127.0.0.1:1/v1/api")
+        .accept_invalid_certs(true)
+        .build()
+        .expect("client");
+    let app = router(AppState::new(client));
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, body) = response_body(resp).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["code"], json!("upstream_unreachable"));
+}
+
+#[tokio::test]
+async fn health_passes_a_4xx_through_unchanged() {
+    let gateway = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/api/iserver/auth/status"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&gateway)
+        .await;
+    let app = make_app(&gateway).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, body) = response_body(resp).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], json!("upstream_client_error"));
+}
+
 #[tokio::test]
 async fn unknown_route_returns_404() {
     let gateway = MockServer::start().await;

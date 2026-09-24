@@ -69,6 +69,8 @@ Status codes map:
 |---|---|
 | `not_authenticated` | 401 |
 | `no_session` | 503 |
+| `upstream_unreachable` | 503 — the Gateway itself is down (connection refused) |
+| `gateway_upstream_failing` | the Gateway's 5xx — `/health` only: the Gateway is up but `api.ibkr.com` behind it is failing; a restart will not help |
 | `upstream_http_error` | 502 |
 | `upstream_api_error` | 502 |
 | `invalid_base_url` | 400 |

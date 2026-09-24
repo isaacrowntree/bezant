@@ -807,9 +807,55 @@ async fn health_sso(State(state): State<AppState>) -> Json<SsoStatusBody> {
     ))
 }
 
+/// `/health` error code for "the Gateway is up, but IBKR behind it is not
+/// answering". The Client Portal Gateway is a proxy to `api.ibkr.com`: a
+/// 5xx from its `auth/status` means the Gateway process took our request
+/// and could not get an answer upstream (IBKR maintenance, Akamai, the
+/// host's route out). A restart cannot fix that and logs the session out,
+/// so it must not look like the Gateway itself being down —
+/// `upstream_unreachable` (connection refused) means exactly that.
+///
+/// The HTTP status is the Gateway's own 5xx, unchanged from before this
+/// code existed, so a client that only reads the status sees no change.
+pub(crate) const GATEWAY_UPSTREAM_FAILING: &str = "gateway_upstream_failing";
+
+/// `Some(response)` when `err` is the Gateway answering a 5xx — see
+/// [`GATEWAY_UPSTREAM_FAILING`].
+fn gateway_upstream_failing(err: &bezant::Error) -> Option<Response<Body>> {
+    let bezant::Error::UpstreamStatus { status, .. } = err else {
+        return None;
+    };
+    let code = StatusCode::from_u16(*status).ok()?;
+    if !code.is_server_error() {
+        return None;
+    }
+    tracing::warn!(
+        upstream_status = status,
+        "health: gateway is up but its upstream (api.ibkr.com) is failing"
+    );
+    Some(
+        (
+            code,
+            Json(serde_json::json!({
+                "code": GATEWAY_UPSTREAM_FAILING,
+                "message": format!(
+                    "the IBKR Gateway answered, but its auth/status failed upstream with HTTP {status}; \
+                     the Gateway process is up — restarting it will not help and logs the session out"
+                ),
+                "gateway_reachable": true,
+                "upstream_status": status,
+            })),
+        )
+            .into_response(),
+    )
+}
+
 #[tracing::instrument(skip_all)]
-async fn health(State(state): State<AppState>) -> Result<Json<HealthBody>, AppError> {
-    let status = state.client().auth_status().await?;
+async fn health(State(state): State<AppState>) -> Result<Response<Body>, AppError> {
+    let status = match state.client().auth_status().await {
+        Ok(s) => s,
+        Err(e) => return gateway_upstream_failing(&e).ok_or_else(|| e.into()),
+    };
     Ok(Json(HealthBody {
         authenticated: status.authenticated,
         connected: status.connected,
@@ -821,7 +867,8 @@ async fn health(State(state): State<AppState>) -> Result<Json<HealthBody>, AppEr
             consecutive_faults: b.consecutive_faults,
             wedged: b.consecutive_faults >= SSO_WEDGED_AFTER,
         }),
-    }))
+    })
+    .into_response())
 }
 
 #[tracing::instrument(skip_all)]
