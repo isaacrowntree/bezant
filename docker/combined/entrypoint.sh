@@ -69,8 +69,32 @@ BZ_PID=$!
 # an IB Key tap, which is the most expensive thing in this system; the observed
 # wedge happened while logged out, where a bounce is free. If it ever wedges
 # while authenticated we want a human, not a reboot loop.
+#
+# ONLY on a definite logged-out answer from auth/status (401/403). Anything
+# else — unreachable, a 5xx, a redirect — says nothing about whether a restart
+# is free, so it is no verdict: neither counted nor reset. (Until 2026-09-24
+# every non-2xx, non-000 code fell through to the fault count, so a gateway
+# answering auth/status with a 5xx could be killed with a session behind it.)
+#
+# And never while the host holds the IBKR session lock. Logins, gateway resets
+# and the host watchdog's own restart take a lock file in a directory that can
+# be bind-mounted read-only here (SESSION_LOCK_DIR). While it is held this loop
+# neither probes — ssodh/init with compete:true would fight the login — nor
+# kills anything. The lease (expiresAtEpoch) is the only staleness test
+# available from inside a container; host pids are invisible here. Without the
+# mount the directory is absent and nothing changes.
 SSO_WEDGE_CHECK_SECS="${SSO_WEDGE_CHECK_SECS:-60}"
 SSO_WEDGE_THRESHOLD="${SSO_WEDGE_THRESHOLD:-5}"
+SESSION_LOCK_DIR="${SESSION_LOCK_DIR:-/var/lib/ibkr-session}"
+
+# True while a live holder's lease is in the lock directory.
+session_locked() {
+    local f="$SESSION_LOCK_DIR/holder.json" exp
+    [ -r "$f" ] || return 1
+    exp=$(sed -n 's/.*"expiresAtEpoch"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$f" 2>/dev/null | head -n 1)
+    [ -n "$exp" ] || return 1
+    [ "$(date +%s)" -lt "$exp" ]
+}
 
 sso_wedge_watch() {
     local faults=0 auth_code sso_code
@@ -80,13 +104,17 @@ sso_wedge_watch() {
     sleep 120
     while :; do
         sleep "$SSO_WEDGE_CHECK_SECS"
+        # A login or restart is in progress on the host: hands off, count kept.
+        if session_locked; then continue; fi
         # Are we logged out? Only then is a restart free.
         auth_code=$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' \
             https://127.0.0.1:5000/v1/api/iserver/auth/status 2>/dev/null || echo 000)
-        # 401/403 => logged out. 2xx => authenticated, leave it alone entirely.
+        # 2xx => authenticated, leave it alone entirely. 401/403 => logged out,
+        # the one state worth judging. Anything else => no verdict.
         case "$auth_code" in
             2*) faults=0; continue ;;
-            000) continue ;;   # unreachable is the other supervisor's problem
+            401|403) ;;
+            *) continue ;;     # 000 (the other supervisor's problem), 5xx, 3xx...
         esac
 
         sso_code=$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' \
