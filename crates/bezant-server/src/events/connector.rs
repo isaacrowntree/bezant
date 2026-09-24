@@ -36,8 +36,12 @@
 //! reads against the rings and a command channel into the actor task.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use futures_util::FutureExt;
 
 use bezant::{MarketDataFields, WsClient, WsMessage};
 use serde_json::json;
@@ -136,6 +140,7 @@ pub struct EventsHandle {
     cmd_tx: mpsc::Sender<ConnectorCmd>,
     started_at: Instant,
     event_log: Option<Arc<EventLog>>,
+    persist_failures: Arc<AtomicU64>,
 }
 
 impl EventsHandle {
@@ -159,6 +164,7 @@ struct StatusState {
     subscriptions: BTreeMap<String, SubscriptionState>,
     subscribe_refusals: u64,
     session_rollovers: u64,
+    connector_restarts: u64,
 }
 
 impl EventsHandle {
@@ -203,6 +209,8 @@ impl EventsHandle {
             subscriptions: s.subscriptions.clone(),
             subscribe_refusals: s.subscribe_refusals,
             session_rollovers: s.session_rollovers,
+            connector_restarts: s.connector_restarts,
+            persist_failures: self.persist_failures.load(Ordering::Relaxed),
         }
     }
 
@@ -267,6 +275,7 @@ impl EventsHandle {
             cmd_tx,
             started_at,
             event_log: event_log.clone(),
+            persist_failures: Arc::default(),
         };
         let sink = TestSink {
             rings,
@@ -393,6 +402,7 @@ pub fn spawn_connector(client: bezant::Client, cfg: ConnectorCfg) -> EventsHandl
     }
 
     let actor = ConnectorActor::new(client, cfg, rings.clone(), status.clone(), cmd_rx);
+    let persist_failures = actor.persist_failures.clone();
 
     tokio::spawn(actor.run());
 
@@ -402,6 +412,7 @@ pub fn spawn_connector(client: bezant::Client, cfg: ConnectorCfg) -> EventsHandl
         cmd_tx,
         started_at,
         event_log,
+        persist_failures,
     }
 }
 
@@ -462,6 +473,8 @@ struct ConnectorActor {
     active_marketdata_subs: BTreeSet<i64>,
     resubscribe: Resubscribe,
     link: Link,
+    /// sqlite appends that failed since boot (see [`Self::persist`]).
+    persist_failures: Arc<AtomicU64>,
 }
 
 /// The connector's view of its own connection history — what decides when
@@ -603,11 +616,53 @@ impl ConnectorActor {
             active_marketdata_subs: BTreeSet::new(),
             resubscribe: Resubscribe::default(),
             link: Link::default(),
+            persist_failures: Arc::default(),
         }
     }
 
+    /// Supervise [`Self::run_links`]. Nothing used to watch the connector
+    /// task: a panic in it (the byte-slicing `truncate` could do it) ended
+    /// the task, left `/events/_status` claiming `connected: true` forever
+    /// and every ring frozen. Now a panic is caught, the link is marked
+    /// down, counted in `connector_restarts`, and the loop starts over with
+    /// the rings, epoch and command channel intact.
     async fn run(mut self) {
         info!("events connector starting");
+        loop {
+            let outcome = AssertUnwindSafe(self.run_links()).catch_unwind().await;
+            let reason = match outcome {
+                Ok(()) => "connector loop returned".to_owned(),
+                Err(panic) => panic
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_owned())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "non-string panic".to_owned()),
+            };
+            self.on_crash(&reason).await;
+            sleep(self.cfg.backoff_min).await;
+        }
+    }
+
+    /// The connector task died mid-flight. Whatever it held is gone — the
+    /// socket was dropped while unwinding — so report the link down and
+    /// open an outage, and the next connect records it like any other.
+    async fn on_crash(&mut self, reason: &str) {
+        tracing::error!(reason, "events connector crashed; restarting it");
+        let was_connected = self.link.connected_at.take().is_some();
+        if was_connected {
+            self.link.outage = Some(Outage {
+                since: now_iso(),
+                failed_attempts: 0,
+            });
+        }
+        self.resubscribe = Resubscribe::default();
+        let mut s = self.status.write().await;
+        s.connected = false;
+        s.connector_restarts += 1;
+    }
+
+    /// Connect, run, back off, repeat — forever.
+    async fn run_links(&mut self) {
         let mut backoff = self.cfg.backoff_min;
         loop {
             let result = self.connect_and_run().await;
@@ -1014,12 +1069,25 @@ impl ConnectorActor {
 
     /// Mirror an event to sqlite if configured. Best-effort — the in-memory
     /// ring remains the canonical fast-path read.
+    ///
+    /// A failed append used to vanish (the `spawn_blocking` result was
+    /// dropped). It is now counted in `persist_failures` and logged at
+    /// WARN on the 1st, 2nd, 4th, 8th… failure, so a full disk is loud
+    /// once without a line per P&L tick.
     fn persist(&self, evt: ObservedEvent) {
         if let Some(log) = &self.cfg.event_log {
             let log = log.clone();
+            let failures = self.persist_failures.clone();
             // sqlite writes are blocking; offload to a worker so we
             // don't block the connector loop on I/O.
-            tokio::task::spawn_blocking(move || log.append(&evt));
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = log.append(&evt) {
+                    let n = failures.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n.is_power_of_two() {
+                        warn!(error = %e, topic = %evt.topic, failures = n, "events sqlite: append failed; history will be missing events");
+                    }
+                }
+            });
         }
     }
 
@@ -1118,12 +1186,19 @@ fn now_iso() -> String {
     now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+/// At most `max` bytes of `s`, cut on a char boundary. Slicing at a raw
+/// byte offset panicked the connector task on any frame whose 200th byte
+/// fell inside a multi-byte character — an accented company name in an
+/// order frame was enough.
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
+        return s.to_string();
     }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 #[cfg(test)]
@@ -1346,6 +1421,57 @@ mod tests {
         for _ in 0..50 {
             assert_eq!(r.take_round(0).0, vec!["orders"]);
         }
+    }
+
+    #[test]
+    fn truncate_cuts_on_a_char_boundary() {
+        // 'é' is two bytes; a cut at an odd byte used to panic.
+        let s = "é".repeat(150);
+        let t = truncate(&s, 199);
+        assert!(t.ends_with('…'));
+        assert_eq!(t.trim_end_matches('…').len(), 198);
+        assert_eq!(truncate("ok", 200), "ok");
+        // Every cut point of a mixed string is safe.
+        let mixed = "a€b😀c";
+        for max in 0..mixed.len() {
+            let _ = truncate(mixed, max);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_crash_marks_the_link_down_and_opens_an_outage() {
+        let mut actor = test_actor();
+        actor.on_connected().await;
+        actor.status.write().await.connected = true;
+        let epoch = actor.status.read().await.reset_epoch;
+
+        actor.on_crash("boom").await;
+
+        {
+            let s = actor.status.read().await;
+            assert!(!s.connected);
+            assert_eq!(s.connector_restarts, 1);
+        }
+        // The next connect is a reconnect with its one gap.
+        actor.on_connected().await;
+        assert_eq!(actor.status.read().await.reset_epoch, epoch + 1);
+        assert_eq!(actor.rings.read().await.get("gap").unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_supervisor_survives_a_panic_in_the_loop() {
+        // The shape `run` relies on: a panic inside a future borrowing the
+        // actor is caught, and the actor is usable afterwards.
+        let mut actor = test_actor();
+        let caught = AssertUnwindSafe(async {
+            actor.link.ever_connected = true;
+            panic!("inside the loop");
+        })
+        .catch_unwind()
+        .await;
+        assert!(caught.is_err());
+        actor.on_crash("inside the loop").await;
+        assert_eq!(actor.status.read().await.connector_restarts, 1);
     }
 
     #[test]

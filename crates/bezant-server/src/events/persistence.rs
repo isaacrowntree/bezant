@@ -31,7 +31,7 @@
 //! once-an-hour task; nothing in the read path waits on it.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -149,6 +149,15 @@ impl EventLog {
         })
     }
 
+    /// The connection. A poisoned lock is recovered rather than propagated:
+    /// a panic on another thread mid-write leaves sqlite itself consistent
+    /// (the statement either committed or it did not), and a history log
+    /// that panics every caller forever after one bad write is worse than
+    /// one that carries on.
+    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Path the log was opened against.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -159,7 +168,7 @@ impl EventLog {
     pub fn append(&self, event: &ObservedEvent) -> rusqlite::Result<i64> {
         let payload_str = serde_json::to_string(&event.payload)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT INTO events (cursor, topic, received_at, reset_epoch, payload) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -181,7 +190,7 @@ impl EventLog {
         since_ts: &str,
         limit: usize,
     ) -> rusqlite::Result<Vec<ObservedEvent>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT cursor, topic, received_at, reset_epoch, payload \
              FROM events WHERE topic = ?1 AND received_at > ?2 \
@@ -213,7 +222,7 @@ impl EventLog {
     /// Drop events older than the topic's retention cutoff. Returns
     /// total rows deleted across all topics.
     pub fn prune(&self, policy: &RetentionPolicy) -> rusqlite::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let now: chrono::DateTime<chrono::Utc> = std::time::SystemTime::now().into();
         let mut total = 0usize;
         let topics: Vec<String> = {
@@ -243,7 +252,7 @@ impl EventLog {
     /// and epoch never fall back below what a client may still hold, even
     /// when the host clock came up behind the previous run.
     pub fn high_water(&self) -> rusqlite::Result<Option<(u64, u64)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let (cursor, epoch): (Option<i64>, Option<i64>) = conn.query_row(
             "SELECT MAX(cursor), MAX(reset_epoch) FROM events",
             [],
@@ -259,7 +268,7 @@ impl EventLog {
 
     /// Total row count. Used by tests + diagnostics.
     pub fn count(&self) -> rusqlite::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
             .optional()?
@@ -370,6 +379,21 @@ mod tests {
         late.reset_epoch = 9;
         log.append(&late).unwrap();
         assert_eq!(log.high_water().unwrap(), Some((7, 9)));
+    }
+
+    #[test]
+    fn a_poisoned_lock_does_not_take_the_log_down() {
+        let log = std::sync::Arc::new(EventLog::open_in_memory().unwrap());
+        let poisoner = log.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.conn.lock().unwrap();
+            panic!("poison the lock");
+        })
+        .join();
+        assert!(log.conn.is_poisoned());
+        log.append(&evt(1, "orders", "2026-05-06T13:30:00Z"))
+            .unwrap();
+        assert_eq!(log.count().unwrap(), 1);
     }
 
     #[test]

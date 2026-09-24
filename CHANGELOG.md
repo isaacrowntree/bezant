@@ -78,6 +78,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   topic `quiet` and re-asking stops. A refusal makes it `refused` again;
   the first real frame makes it `subscribed`. `quiet` is a new value of
   `subscriptions.*`.
+- **The connector task is supervised.** Nothing watched it: a panic
+  ended it and left `/events/_status` reporting `connected: true` over
+  frozen rings. A panic is now caught, the link marked down, counted in
+  the new `connector_restarts` status field, and the loop restarted with
+  its rings, epoch and command channel intact. The panic most likely to
+  happen is gone too: the debug-log `truncate()` sliced frames at a raw
+  byte offset and panicked on any multi-byte character at byte 200.
+- **Failed sqlite appends are counted and logged** (new
+  `persist_failures` status field; WARN on the 1st, 2nd, 4th… failure)
+  instead of being dropped with the `spawn_blocking` result, and the
+  event log's mutex recovers from poisoning instead of panicking every
+  later caller.
 
 - **`bezant-core::WsClient::connect` honours `accept_invalid_certs`.**
   Previously the WS handshake used tokio-tungstenite's default rustls

@@ -89,6 +89,11 @@ pub struct EventsStatus {
     /// How many times the connector tore its socket down because the
     /// Gateway's session id changed underneath it (a re-login).
     pub session_rollovers: u64,
+    /// How many times the connector task panicked and was restarted by its
+    /// supervisor since the process started.
+    pub connector_restarts: u64,
+    /// sqlite history appends that failed since the process started.
+    pub persist_failures: u64,
 }
 
 /// Where a standing subscription (`orders`, `pnl`) stands at the upstream WS.
