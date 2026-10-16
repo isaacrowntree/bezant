@@ -7,8 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.1](https://github.com/isaacrowntree/bezant/compare/bezant-mcp-v0.3.0...bezant-mcp-v0.3.1) - 2026-10-16
+## [0.4.0](https://github.com/isaacrowntree/bezant/compare/bezant-mcp-v0.3.0...bezant-mcp-v0.4.0) - 2026-10-17
+
+### Breaking
+
+- *(deps)* rmcp 1.6 -> 3.4 and schemars 0.8 -> 1. Both appear in the public
+  API (`BezantMcp::tool_router`, the tool methods' `CallToolResult` /
+  `McpError` return types, the `ServerHandler` impl and the
+  `JsonSchema` derives on the argument structs), so library users must
+  move to rmcp 3 / schemars 1 as well. The `bezant-mcp` binary is
+  unaffected. ([#21](https://github.com/isaacrowntree/bezant/pull/21))
 
 ### Fixed
 
-- *(deps)* rmcp 3.x, tower-http 0.7, schemars 1; clear rustls advisories ([#21](https://github.com/isaacrowntree/bezant/pull/21))
+- *(deps)* rustls 0.23.46, clearing RUSTSEC-2026-0346 and related advisories ([#21](https://github.com/isaacrowntree/bezant/pull/21))
