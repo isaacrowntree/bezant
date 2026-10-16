@@ -142,14 +142,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: |
-          set -euo pipefail
-          # Order matters: bezant-spec → bezant-api → bezant-core →
-          # bezant-server / bezant-cli / bezant-mcp. cargo publish
-          # --dry-run still resolves path deps, so this respects the
-          # graph automatically.
-          for c in bezant-spec bezant-api bezant-core bezant-server bezant-cli bezant-mcp; do
-            echo "::group::$c"
-            cargo publish -p "$c" --dry-run --allow-dirty --no-verify
-            echo "::endgroup::"
-          done
+      # One workspace-wide dry run rather than one per crate: cargo
+      # packages the whole set together and resolves inter-crate deps
+      # against the local packages, so a release PR that bumps
+      # bezant-spec *and* its dependents still passes before anything
+      # is on crates.io. `publish = false` crates (xtask) are skipped.
+      - run: cargo publish --workspace --dry-run --allow-dirty --no-verify
