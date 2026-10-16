@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "bezant-api"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "bezant-spec",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "bezant-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -267,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "bezant-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "bezant-api",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "bezant-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "bezant-api",
@@ -305,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "bezant-server"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "bezant-spec"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde_json",
 ]
