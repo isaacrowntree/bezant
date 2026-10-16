@@ -10,28 +10,62 @@ on:
       - "release-plz.toml"
   workflow_dispatch:
 
-concurrency:
-  group: release-plz-${{ github.ref }}
-
 jobs:
-  release-plz:
-    name: release-plz
+  # Publishes any crate whose version isn't on crates.io yet (i.e. after a
+  # release PR merges), then tags it and cuts a GitHub release.
+  #
+  # Auth is crates.io Trusted Publishing: there is no CARGO_REGISTRY_TOKEN.
+  # release-plz exchanges this job's OIDC token for a short-lived publish
+  # token. Each crate's trusted-publisher entry on crates.io names this
+  # repo, `release.yml` and the `release` environment, so all three must
+  # stay in sync with what's configured there.
+  release-plz-release:
+    name: release-plz release
+    if: github.repository == 'isaacrowntree/bezant'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || github.token }}
+
+  # Opens/updates the release PR with the next versions and changelogs.
+  # PRs opened with the default github.token don't trigger CI; set a
+  # RELEASE_PLZ_TOKEN secret (fine-grained PAT or GitHub App token) to get
+  # checks on the release PR, or close and reopen it by hand.
+  release-plz-pr:
+    name: release-plz PR
     if: github.repository == 'isaacrowntree/bezant'
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          token: ${{ secrets.RELEASE_PLZ_TOKEN || github.token }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run release-plz
         uses: release-plz/action@v0.5
+        with:
+          command: release-pr
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || github.token }}
-          # Provide CARGO_REGISTRY_TOKEN as a repo secret once we're ready
-          # to publish automatically to crates.io.
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
