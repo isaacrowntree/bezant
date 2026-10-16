@@ -11,7 +11,13 @@
 all-features = false
 
 [advisories]
-ignore = []
+ignore = [
+    # unsafe-libyaml is unmaintained. It only reaches the tree through
+    # progenitor-macro -> serde_yaml in `xtask` (unpublished, build-time
+    # codegen tooling); no shipped crate depends on it. progenitor 0.15
+    # still pulls serde_yaml, so revisit when it migrates.
+    { id = "RUSTSEC-2024-0449", reason = "xtask-only via progenitor; not in any published crate" },
+]
 version = 2
 
 [licenses]

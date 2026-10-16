@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerConfig};
 use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
 use serde::Deserialize;
 use serde_json::Value;
@@ -202,12 +202,12 @@ impl BezantMcp {
 
 #[tool_handler]
 impl ServerHandler for BezantMcp {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
     }
 }
 
 fn json_result(value: Value) -> CallToolResult {
     let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".into());
-    CallToolResult::success(vec![Content::text(text)])
+    CallToolResult::success(vec![ContentBlock::text(text)])
 }
