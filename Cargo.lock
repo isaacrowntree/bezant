@@ -3623,7 +3623,7 @@ dependencies = [
  "prettyplease 0.2.37",
  "progenitor",
  "serde_json",
- "syn 2.0.119",
+ "syn 3.0.9",
 ]
 
 [[package]]
