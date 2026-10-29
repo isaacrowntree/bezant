@@ -54,8 +54,11 @@ use bezant_server::{router, spawn_connector, AppState, ConnectorCfg};
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Args {
-    /// Address to bind the HTTP server on.
-    #[arg(long, env = "BEZANT_BIND", default_value = "0.0.0.0:8080")]
+    /// Address to bind the HTTP server on. Loopback by default: the
+    /// server trades on its own IBKR session, so anyone who can reach the
+    /// port can trade. Bind wider only behind something that authenticates
+    /// callers (Cloudflare Access, a firewall, a container network).
+    #[arg(long, env = "BEZANT_BIND", default_value = "127.0.0.1:8080")]
     bind: SocketAddr,
 
     /// Base URL of the IBKR Client Portal Gateway.
@@ -265,6 +268,14 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("binding {}", args.bind))?;
     info!(addr = %listener.local_addr()?, "bezant-server listening");
+    if !args.bind.ip().is_loopback() {
+        warn!(
+            bind = %args.bind,
+            "listening beyond loopback: bezant-server does not authenticate callers, \
+             so anyone who can reach this address can place orders on the IBKR session. \
+             Keep it behind an authenticating proxy or a private network."
+        );
+    }
 
     // Graceful shutdown: SIGTERM (k8s pod stop, Railway redeploy) +
     // SIGINT (operator Ctrl-C) trigger axum's drain. Then we
