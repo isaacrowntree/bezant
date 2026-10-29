@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/isaacrowntree/bezant/compare/bezant-server-v0.3.1...bezant-server-v0.4.0) - 2026-10-29
+
+### Fixed
+
+- *(server)* [**breaking**] listen on loopback by default, warn when bound wider ([#29](https://github.com/isaacrowntree/bezant/pull/29))
+
 ## [0.3.1](https://github.com/isaacrowntree/bezant/compare/bezant-server-v0.3.0...bezant-server-v0.3.1) - 2026-10-16
 
 ### Added
