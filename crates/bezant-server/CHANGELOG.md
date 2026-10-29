@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/isaacrowntree/bezant/compare/bezant-server-v0.4.0...bezant-server-v0.4.1) - 2026-10-29
+
+### Fixed
+
+- *(deps)* clear RUSTSEC-2026-0382/0383; progenitor 0.15, syn 3, comfy-table 8, oas3-gen-support 0.29, tokio-tungstenite 0.30 ([#32](https://github.com/isaacrowntree/bezant/pull/32))
+
 ## [0.4.0](https://github.com/isaacrowntree/bezant/compare/bezant-server-v0.3.1...bezant-server-v0.4.0) - 2026-10-29
 
 ### Fixed
