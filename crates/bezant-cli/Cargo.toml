@@ -26,7 +26,7 @@ bezant-api = { path = "../bezant-api", version = "0.4.0" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
-comfy-table = { version = "7", default-features = false }
+comfy-table = { version = "8", default-features = false }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
