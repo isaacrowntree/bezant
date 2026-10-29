@@ -20,7 +20,11 @@ FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 
 COPY --from=build /work/target/release/bezant-server /usr/local/bin/bezant-server
 
-ENV RUST_LOG=bezant_server=info,bezant=info,tower_http=info
+# Inside the container, listen on all interfaces so a published port can
+# reach the server; which host interface it's published on is the boundary
+# (publish on 127.0.0.1, as the README does).
+ENV BEZANT_BIND=0.0.0.0:8080 \
+    RUST_LOG=bezant_server=info,bezant=info,tower_http=info
 
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/bezant-server"]

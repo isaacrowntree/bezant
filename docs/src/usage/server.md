@@ -95,7 +95,7 @@ Env-first, clap-exposed. See `bezant-server --help`.
 | Variable                            | Default                              |
 |-------------------------------------|--------------------------------------|
 | `IBKR_GATEWAY_URL`                  | `https://localhost:5000/v1/api`      |
-| `BEZANT_BIND`                       | `0.0.0.0:8080`                       |
+| `BEZANT_BIND`                       | `127.0.0.1:8080`                     |
 | `BEZANT_KEEPALIVE_SECS`             | `60`                                 |
 | `BEZANT_VERIFY_TLS`                 | `false` (accepts the Gateway's self-signed cert) |
 | `BEZANT_DEBUG_TOKEN`                | unset (`/debug/*` 404s without it)   |

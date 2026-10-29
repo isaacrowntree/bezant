@@ -199,10 +199,12 @@ login" alert rather than crashing.
 - **Cloudflare Zero Trust is the primary perimeter.** With a correctly
   configured Access policy, only your email-authenticated browser and
   your token-authenticated bot can reach the Pi.
-- **bezant-server's `BEZANT_BIND` defaults to `0.0.0.0:8080`** — that's
-  fine *behind* Cloudflare Tunnel + a `127.0.0.1` Docker port-bind
-  (as in the snippet above). Don't expose 8080 directly to the
-  internet without Zero Trust in front.
+- **bezant-server doesn't authenticate callers**, so `BEZANT_BIND`
+  defaults to `127.0.0.1:8080` and the server warns at startup when
+  bound wider. The Docker images bind `0.0.0.0:8080` inside the
+  container; publish the port on `127.0.0.1` (as in the snippet above)
+  and keep Cloudflare Tunnel + Zero Trust in front. Don't expose 8080
+  directly to the internet.
 - **Debug endpoints (`/debug/jar`, `/debug/probe`)** are off by
   default. Setting `BEZANT_DEBUG_TOKEN` enables them, gated by an
   `X-Bezant-Debug-Token` header (or `?token=…` query). With Zero

@@ -80,7 +80,7 @@ cargo run -p bezant-server -- \
 | Variable                            | Default                              | Notes                                        |
 |-------------------------------------|--------------------------------------|----------------------------------------------|
 | `IBKR_GATEWAY_URL`                  | `https://localhost:5000/v1/api`      |                                              |
-| `BEZANT_BIND`                       | `0.0.0.0:8080`                       |                                              |
+| `BEZANT_BIND`                       | `127.0.0.1:8080`                     |                                              |
 | `BEZANT_KEEPALIVE_SECS`             | `60`                                 | tickle cadence                               |
 | `BEZANT_VERIFY_TLS`                 | `false`                              | accept Gateway's self-signed cert by default |
 | `BEZANT_DEBUG_TOKEN`                | unset                                | enables `/debug/*` when set                  |
