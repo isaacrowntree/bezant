@@ -1816,9 +1816,9 @@ dependencies = [
 
 [[package]]
 name = "progenitor"
-version = "0.15.1"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15bd395aa613c6491be9233fae4a870a35cd611655c0ef1cbaae7aa9e1c4c0e6"
+checksum = "5f7d37bf1319f2c7abbb95eb340a4be8545b78be1a5d1acde2dcc90b4a04f21d"
 dependencies = [
  "progenitor-client",
  "progenitor-impl",
@@ -1827,9 +1827,9 @@ dependencies = [
 
 [[package]]
 name = "progenitor-client"
-version = "0.15.1"
+version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6aa13eb6d9499a851512ec8fa3280f586be059682da4f05d953924be45d736f0"
+checksum = "77a5c9bb7a283a09f3ed5fab3a41fc1afb73782b7ca6f701ed26cb457b5fca3f"
 dependencies = [
  "bytes",
  "futures-core",
@@ -1842,9 +1842,9 @@ dependencies = [
 
 [[package]]
 name = "progenitor-impl"
-version = "0.15.1"
+version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d9fbe5a1aa114c6c7c507a30ebeb0b12de383edab951ea27300210a3841917c"
+checksum = "0605947a436e83717c41205dc5c308e845890c424c48d851783ccf04f173bec8"
 dependencies = [
  "heck",
  "http",
@@ -1864,9 +1864,9 @@ dependencies = [
 
 [[package]]
 name = "progenitor-macro"
-version = "0.15.1"
+version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dccde5096e96f6a57e16af4a4ac575755d5973f0c1bd4e6b7b86808932a33408"
+checksum = "2eddb119cb80c48f5c0c03b9efa4e8b0d5419df6b65a91c7a938f29485c93255"
 dependencies = [
  "openapiv3",
  "proc-macro2",
