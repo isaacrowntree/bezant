@@ -10,7 +10,7 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
-progenitor = "0.15"
+progenitor = "0.16"
 openapiv3 = "2"
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
